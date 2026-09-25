@@ -9,7 +9,7 @@ enum class MenuAction {
     None,
     VoIP,
     Wifi,
-    Bluetooth,
+    BleGatt,
     LoRa,
     Gps,
     NetTools,

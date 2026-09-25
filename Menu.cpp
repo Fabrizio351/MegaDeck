@@ -29,7 +29,7 @@ constexpr int GRID_COLS = 2;
 constexpr int GRID_ROWS = (MENU_ITEM_COUNT + GRID_COLS - 1) / GRID_COLS;
 
 const char* mainItems[MENU_ITEM_COUNT] = {
-    "VOIP", "WIFI", "BLE CHAT", "LORA CHAT",
+    "VOIP", "WIFI", "BLE GATT", "LORA CHAT",
     "GPS", "NET TOOLS", "VPN", "OPENCLAW.AI",
     "HOME ASS.", "FRIGATE", "DRONE", "IMPOSTAZIONI"
 };
@@ -76,7 +76,7 @@ MenuAction actionFromIndex(int index) {
     switch (index) {
         case 0:  return MenuAction::VoIP;
         case 1:  return MenuAction::Wifi;
-        case 2:  return MenuAction::Bluetooth;
+        case 2:  return MenuAction::BleGatt;
         case 3:  return MenuAction::LoRa;
         case 4:  return MenuAction::Gps;
         case 5:  return MenuAction::NetTools;
@@ -89,6 +89,8 @@ MenuAction actionFromIndex(int index) {
         default: return MenuAction::None;
     }
 }
+
+
 
 
 void drawScreen();

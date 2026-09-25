@@ -36,7 +36,7 @@ namespace {
         switch (action) {
             case MenuAction::VoIP:          return "menu:VoIP";
             case MenuAction::Wifi:          return "menu:Wifi";
-            case MenuAction::Bluetooth:     return "menu:Bluetooth";
+            case MenuAction::BleGatt:       return "menu:BleGatt";
             case MenuAction::LoRa:          return "menu:LoRa";
             case MenuAction::Gps:           return "menu:Gps";
             case MenuAction::NetTools:      return "menu:NetTools";
@@ -54,20 +54,8 @@ namespace {
         CrashLog::breadcrumb(actionTag(action));
 
         switch (action) {
-            case MenuAction::VoIP:
-                Display::showMessage(
-                    "Gestione Chiamate e Messaggi VoIP",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
             case MenuAction::Wifi:
                 WifiUI::open();
-                break;
-
-            case MenuAction::Bluetooth:
-                BleChatUI::open();
                 break;
 
             case MenuAction::LoRa:
@@ -82,50 +70,28 @@ namespace {
                 NetToolsMenu::open();
                 break;
 
-            case MenuAction::Vpn:
-                Display::showMessage(
-                    "VPN",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
-            case MenuAction::OpenClaw:
-                Display::showMessage(
-                    "OpenClaw",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
-            case MenuAction::HomeAssistant:
-                Display::showMessage(
-                    "Home Assistant",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
-            case MenuAction::Frigate:
-                Display::showMessage(
-                    "Frigate",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
-            case MenuAction::Drone:
-                Display::showMessage(
-                    "Drone",
-                    "Inserisci qui la tua funzione",
-                    Menu::back
-                );
-                break;
-
             case MenuAction::Settings:
                 SettingsUI::open();
                 break;
 
+            // VoIP, BLE GATT, VPN, OpenClaw, Home Assistant, Frigate,
+            // Drone: non ancora implementate. Prima mostravano un popup
+            // LVGL "Inserisci qui la tua funzione" - eliminato (26/09) su
+            // richiesta, restano voci di menu presenti ma senza ancora
+            // una destinazione: il tap non fa nulla per ora. BLE GATT in
+            // particolare prendera' il posto della vecchia chat BLE
+            // (BleChatUI/BleChat.cpp, lasciate sul disco ma non piu'
+            // raggiungibili da qui) con una scansione/connessione GATT ai
+            // dispositivi Bluetooth nelle vicinanze - obiettivo: leggere
+            // i sensori di casa (temperatura, umidita', ecc.) che
+            // trasmettono via BLE.
+            case MenuAction::VoIP:
+            case MenuAction::BleGatt:
+            case MenuAction::Vpn:
+            case MenuAction::OpenClaw:
+            case MenuAction::HomeAssistant:
+            case MenuAction::Frigate:
+            case MenuAction::Drone:
             default:
                 break;
         }
