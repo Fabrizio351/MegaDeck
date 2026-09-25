@@ -1,0 +1,8 @@
+# Copia dell'ultimo .elf caricato, usata solo per addr2line durante la
+# diagnosi crash - si rigenera ad ogni caricamento, non serve versionarla
+# (cresce molto e cambia ad ogni commit senza motivo).
+.build_elf/*.elf
+
+# Cartella vuota, residuo di un tentativo di installazione locale di
+# arduino-cli mai completato.
+bin/
