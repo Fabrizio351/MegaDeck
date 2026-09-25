@@ -12,6 +12,36 @@ namespace Display {
     // disegnare senza passare da LVGL). Vedi project_lvgl_removal_rewrite.
     Arduino_GFX* getGfx();
 
+    // Fase 2: mentre una schermata disegnata a mano e' attiva, LVGL va
+    // "messo in pausa" (update() salta lv_timer_handler()/lv_refr_now()
+    // e l'header LVGL su lv_layer_top()), altrimenti risovrascriverebbe
+    // il framebuffer sopra quello che abbiamo appena disegnato noi. Chi
+    // apre una schermata cosi' chiama setDirectDrawMode(true) e la
+    // richiude con setDirectDrawMode(false) prima di tornare al menu
+    // (LVGL riprende da dove aveva lasciato, nessun redraw esplicito
+    // necessario al ritorno).
+    void setDirectDrawMode(bool active);
+
+    // Barra in alto condivisa per le schermate disegnate a mano - stessi
+    // dati reali dell'header LVGL (ConnStatus, GPS, batteria) ma
+    // disegnata direttamente. Da richiamare ad ogni apertura schermata e
+    // ogni volta che si vuole aggiornarla (nessun redraw automatico:
+    // niente ridisegno a tempo per non reintrodurre il problema gia'
+    // risolto altrove, vedi project_lvgl_pool_exhaustion_fix).
+    void drawHeaderBar();
+
+    // Colori condivisi fra le schermate disegnate a mano - stessa
+    // palette validata in Fase 1 (verde matrix). RGB565, non 24 bit.
+    extern const uint16_t DD_BG;
+    extern const uint16_t DD_ACCENT;
+    extern const uint16_t DD_ACCENT_DIM;
+    extern const uint16_t DD_TEXT;
+    extern const uint16_t DD_TEXT_DIM;
+
+    // Altezza della barra in alto disegnata a mano, in px: le schermate
+    // la usano per sapere dove inizia il loro contenuto.
+    constexpr int16_t DD_HEADER_H = 18;
+
     // Palette condivisa (Menu.cpp la riusa per stilizzare i bottoni)
     extern const lv_color_t COLOR_BG;       // nero pieno
     extern const lv_color_t COLOR_ACCENT;   // azzurro cyberpunk

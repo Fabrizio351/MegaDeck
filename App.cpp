@@ -161,69 +161,6 @@ namespace App {
         CrashLog::breadcrumb("Input::begin");
         Input::begin();
 
-        // TEMPORANEO - Fase 1, passo 2 della riscrittura senza LVGL (vedi
-        // project_lvgl_removal_rewrite in memoria): prova interattiva del
-        // rilevamento tap "a mano" (TouchUI, senza LVGL) sulla schermata
-        // di disegno diretto del passo 1 - tocca una cella del menu per
-        // 15 secondi e verifica che il rettangolino verde si sposti su
-        // quella giusta. Da togliere una volta validato il passo.
-        {
-            int selectedTest = 0;
-            Display::showDirectDrawTest(selectedTest);
-
-            uint32_t testStartMs = millis();
-            while (millis() - testStartMs < 15000) {
-                Input::update();
-                int tapped = TouchUI::pollTap();
-                if (tapped >= 0 && tapped != selectedTest) {
-                    selectedTest = tapped;
-                    Display::showDirectDrawTest(selectedTest);
-                }
-                delay(5);
-            }
-        }
-
-        // TEMPORANEO - Fase 1, passo 3 della riscrittura senza LVGL (vedi
-        // project_lvgl_removal_rewrite in memoria): prova interattiva del
-        // campo di testo "a mano" (TextInputUI, senza lv_textarea) -
-        // scrivi qualcosa con la tastiera fisica per 30 secondi (Invio
-        // per confermare prima) e verifica che appaia, che il backspace
-        // funzioni e che il cursore si veda. Da togliere una volta
-        // validato il passo.
-        {
-            Arduino_GFX* gfx = Display::getGfx();
-            gfx->fillScreen(gfx->color565(0x00, 0x00, 0x00));
-            gfx->setFont(nullptr);
-            gfx->setTextSize(1);
-            gfx->setTextColor(gfx->color565(0x39, 0xFF, 0x14));
-            gfx->setCursor(8, 10);
-            gfx->print("PROVA CAMPO DI TESTO");
-            gfx->setCursor(8, 26);
-            gfx->print("Scrivi, poi Invio per confermare");
-
-            String testBuffer;
-            TextInputUI::draw(8, 50, 304, 30, testBuffer);
-            Input::setTextEntryMode(true);
-
-            uint32_t testStartMs = millis();
-            bool confirmed = false;
-            while (!confirmed && millis() - testStartMs < 30000) {
-                Input::update();
-                TextInputUI::Result result = TextInputUI::handleKey(testBuffer, 40);
-                if (result == TextInputUI::Result::Changed) {
-                    TextInputUI::draw(8, 50, 304, 30, testBuffer);
-                } else if (result == TextInputUI::Result::Confirmed) {
-                    confirmed = true;
-                    gfx->setCursor(8, 96);
-                    gfx->print("Confermato: ");
-                    gfx->print(testBuffer);
-                }
-                delay(5);
-            }
-
-            Input::setTextEntryMode(false);
-        }
-
         CrashLog::breadcrumb("GPS::begin");
         GPS::begin();
 

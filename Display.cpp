@@ -370,6 +370,71 @@ const lv_color_t COLOR_ACCENT =
 const lv_color_t COLOR_TEXT =
     lv_color_hex(0xFFFFFF);
 
+// Palette RGB565 per le schermate disegnate a mano (Fase 2), stessa
+// validata in Fase 1 con showDirectDrawTest(). gfx->color565() converte
+// da R,G,B a 8 bit al formato a 16 bit reale del pannello - MAI scrivere
+// qui valori esadecimali a 24 bit come se fossero gia' RGB565 (bug reale
+// gia' preso una volta, vedi project_psram... no, vedi il commit del
+// 25/09 su showDirectDrawTest).
+const uint16_t DD_BG = gfx->color565(0x00, 0x00, 0x00);
+const uint16_t DD_ACCENT = gfx->color565(0x39, 0xFF, 0x14);
+const uint16_t DD_ACCENT_DIM = gfx->color565(0x0A, 0x2E, 0x10);
+const uint16_t DD_TEXT = gfx->color565(0xD7, 0xF7, 0xDF);
+const uint16_t DD_TEXT_DIM = gfx->color565(0x7F, 0xAE, 0x86);
+
+bool directDrawModeActive = false;
+
+void setDirectDrawMode(bool active) {
+    directDrawModeActive = active;
+}
+
+
+// Barra in alto condivisa (Fase 2): stessa idea/layout del test di Fase
+// 1 (barretta RAM, ora, sigle radio) ma con dati REALI invece che
+// placeholder fissi - stesse fonti gia' usate da updateHeader() (LVGL).
+// Aggiunta anche la percentuale batteria, assente nel test.
+void drawHeaderBar() {
+    gfx->fillRect(0, 0, DISPLAY_WIDTH, DD_HEADER_H, DD_BG);
+    gfx->drawFastHLine(0, DD_HEADER_H, DISPLAY_WIDTH, DD_ACCENT_DIM);
+
+    gfx->setFont(nullptr);
+    gfx->setTextSize(1);
+    gfx->setTextWrap(false);
+
+    uint32_t heapTotal = ESP.getHeapSize();
+    int ramFreePercent = (heapTotal > 0)
+        ? static_cast<int>((ESP.getFreeHeap() * 100UL) / heapTotal)
+        : 0;
+    uint16_t ramColor = (ramFreePercent >= 50) ? DD_ACCENT
+        : (ramFreePercent >= 20) ? gfx->color565(0xF1, 0xC4, 0x0F)
+        : gfx->color565(0xE7, 0x4C, 0x3C);
+    gfx->fillRect(4, 4, 4, 10, ramColor);
+
+    String time = GPS::getTimeLocal();
+    gfx->setTextColor(DD_TEXT_DIM);
+    gfx->setCursor(12, 6);
+    gfx->print(time.length() > 0 ? time : "...");
+
+    gfx->setTextColor(ConnStatus::isWifiConnected() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setCursor(180, 6);
+    gfx->print("WIFI");
+
+    gfx->setTextColor(ConnStatus::isBluetoothActive() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setCursor(216, 6);
+    gfx->print("BLE");
+
+    gfx->setTextColor(ConnStatus::isLoraActive() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setCursor(244, 6);
+    gfx->print("LORA");
+
+    int batteryPercent = Board::getBatteryPercent();
+    char battText[8];
+    snprintf(battText, sizeof(battText), "%d%%", batteryPercent);
+    gfx->setTextColor(DD_TEXT_DIM);
+    gfx->setCursor(288, 6);
+    gfx->print(battText);
+}
+
 
 void begin() {
     DEBUG_PRINTLN("[DISPLAY] avvio...");
@@ -640,6 +705,14 @@ void showDirectDrawTest(int selectedIndex) {
 
 
 void update() {
+    // Fase 2: mentre una schermata disegnata a mano e' attiva, LVGL resta
+    // in pausa - non toccare l'header (scrive su lv_layer_top()) ne'
+    // processare/riflushare nulla, altrimenti sovrascriverebbe il
+    // framebuffer sopra quello appena disegnato direttamente.
+    if (directDrawModeActive) {
+        return;
+    }
+
     updateHeader();
 
     lv_timer_handler();
