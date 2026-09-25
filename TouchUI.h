@@ -29,4 +29,13 @@ namespace TouchUI {
     // l'indice della zona appena toccata con un tap valido, o -1 se
     // nessun tap e' stato completato in questo ciclo.
     int pollTap();
+
+    // Da chiamare una volta per ciclo, come pollTap() (le due tracciano
+    // stato indipendente, quindi si possono chiamare entrambe nello
+    // stesso giro senza conflitti). Ritorna lo spostamento verticale in
+    // px (positivo = dito verso il basso) dall'ultima chiamata, mentre
+    // il dito resta premuto; 0 se non c'e' tocco o al primo campione di
+    // una nuova pressione. Il chiamante accumula il valore e lo converte
+    // in scorrimento a righe intere quando supera l'altezza di una riga.
+    int16_t pollDragDeltaY();
 }

@@ -21,6 +21,9 @@ namespace {
     constexpr int16_t TAP_MOVE_TOLERANCE_PX = 14;
     constexpr int32_t TAP_MOVE_TOLERANCE_SQ =
         static_cast<int32_t>(TAP_MOVE_TOLERANCE_PX) * TAP_MOVE_TOLERANCE_PX;
+
+    bool dragActive = false;
+    int16_t lastDragY = 0;
 }
 
 namespace TouchUI {
@@ -72,5 +75,23 @@ namespace TouchUI {
 
         wasTouched = touched;
         return result;
+    }
+
+    int16_t pollDragDeltaY() {
+        bool touched = Input::isTouched();
+        int16_t y = Input::getTouchY();
+        int16_t delta = 0;
+
+        if (touched) {
+            if (dragActive) {
+                delta = y - lastDragY;
+            }
+            dragActive = true;
+            lastDragY = y;
+        } else {
+            dragActive = false;
+        }
+
+        return delta;
     }
 }

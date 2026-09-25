@@ -421,16 +421,27 @@ void drawHeaderBar() {
     gfx->print(time.length() > 0 ? time : "...");
 
     gfx->setTextColor(ConnStatus::isWifiConnected() ? DD_ACCENT : DD_TEXT_DIM);
-    gfx->setCursor(180, 6);
+    gfx->setCursor(150, 6);
     gfx->print("WIFI");
 
     gfx->setTextColor(ConnStatus::isBluetoothActive() ? DD_ACCENT : DD_TEXT_DIM);
-    gfx->setCursor(216, 6);
+    gfx->setCursor(178, 6);
     gfx->print("BLE");
 
     gfx->setTextColor(ConnStatus::isLoraActive() ? DD_ACCENT : DD_TEXT_DIM);
-    gfx->setCursor(244, 6);
+    gfx->setCursor(202, 6);
     gfx->print("LORA");
+
+    // NetGuard: era un'icona LVGL, persa nella conversione a disegno
+    // diretto (riaggiunta il 26/09 su segnalazione). Solo verde (attivo,
+    // nessun allarme) o rosso (allarme non ancora chiuso) su richiesta -
+    // niente stato intermedio arancio.
+    uint16_t guardColor = ConnStatus::hasNetGuardPendingAlert()
+        ? gfx->color565(0xE7, 0x4C, 0x3C)
+        : (ConnStatus::isNetGuardActive() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setTextColor(guardColor);
+    gfx->setCursor(230, 6);
+    gfx->print("GUARD");
 
     int batteryPercent = Board::getBatteryPercent();
     char battText[8];

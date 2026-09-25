@@ -66,6 +66,11 @@ constexpr int VISIBLE_ROWS = 5; // (240 - GRID_TOP) / ROW_STEP, arrotondato per 
 int topVisibleRow = 0;
 int itemZone[MENU_ITEM_COUNT];
 
+// Accumulo dello scorrimento touch trascinato (vedi TouchUI::pollDragDeltaY):
+// px sotto la soglia di una riga intera restano qui finche' non se ne
+// accumula abbastanza per spostare topVisibleRow di una riga.
+int dragAccumY = 0;
+
 
 MenuAction actionFromIndex(int index) {
     switch (index) {
@@ -236,6 +241,7 @@ void begin(ActionCallback callback) {
 
     selectedItem = 0;
     topVisibleRow = 0;
+    dragAccumY = 0;
     mainMenuVisible = true;
 
     showMain();
@@ -251,6 +257,41 @@ void update() {
     InputEvent event = Input::getEvent();
 
     if (mainMenuVisible) {
+        int16_t dragDelta = TouchUI::pollDragDeltaY();
+        if (dragDelta != 0) {
+            dragAccumY += dragDelta;
+
+            int maxTopRow = GRID_ROWS - VISIBLE_ROWS;
+            if (maxTopRow < 0) {
+                maxTopRow = 0;
+            }
+
+            bool scrolled = false;
+            while (dragAccumY >= ROW_STEP && topVisibleRow > 0) {
+                topVisibleRow--;
+                dragAccumY -= ROW_STEP;
+                scrolled = true;
+            }
+            while (dragAccumY <= -ROW_STEP && topVisibleRow < maxTopRow) {
+                topVisibleRow++;
+                dragAccumY += ROW_STEP;
+                scrolled = true;
+            }
+
+            // Non far crescere l'accumulo all'infinito contro un bordo
+            // (dito che continua a trascinare oltre inizio/fine lista).
+            if (topVisibleRow == 0 && dragAccumY > ROW_STEP) {
+                dragAccumY = ROW_STEP;
+            }
+            if (topVisibleRow == maxTopRow && dragAccumY < -ROW_STEP) {
+                dragAccumY = -ROW_STEP;
+            }
+
+            if (scrolled) {
+                drawScreen();
+            }
+        }
+
         int tapped = TouchUI::pollTap();
         if (tapped >= 0) {
             for (int i = 0; i < MENU_ITEM_COUNT; i++) {
@@ -339,6 +380,7 @@ void showCurrentScreen() {
 void back() {
     selectedItem = 0;
     topVisibleRow = 0;
+    dragAccumY = 0;
     showMain();
 }
 

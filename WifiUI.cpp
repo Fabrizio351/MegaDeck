@@ -4,10 +4,19 @@
 #include "Input.h"
 #include "Menu.h"
 #include "ConnStatus.h"
+#include "TouchUI.h"
+#include "TextInputUI.h"
 
 #include <Arduino.h>
-#include <lvgl.h>
 
+// Fase 3 della riscrittura senza LVGL (vedi project_lvgl_removal_rewrite in
+// memoria): WifiUI convertita a disegno diretto - la schermata piu' grande
+// rimasta su LVGL, prima causa sospetta dei blocchi "torna al menu e si
+// blocca, serve un reset" osservati dopo la connessione (25-26/09). Stessa
+// struttura a modalita' di NetScanUI (Scanning/List/Password/Connecting al
+// posto di Scanning/Results/ConfirmRescan), stesso scorrimento "a righe
+// intere" con trascinamento touch del menu principale, prima vera
+// applicazione di TextInputUI fuori dalla schermata di test.
 namespace {
 
     enum class Mode {
@@ -21,17 +30,13 @@ namespace {
     Mode mode = Mode::Closed;
 
     constexpr int MAX_NETWORKS_SHOWN = 20;
+    constexpr uint16_t MAX_PASSWORD_LEN = 63; // limite WPA2
 
-    lv_obj_t* listScreen = nullptr;
-    lv_obj_t* networkButtons[MAX_NETWORKS_SHOWN] = { nullptr };
     int networkCount = 0;
     int selectedIndex = 0;
 
-    // Il trackball deve poter raggiungere anche "Scansiona di nuovo" e
-    // "Disconnetti", non solo le voci di rete - altrimenti restano
-    // utilizzabili solo col touch. listFocus dice su quale dei tre
-    // "gruppi" naviga attualmente su/giu'; rescanBtnRef/disconnectBtnRef
-    // sono i riferimenti usati da updateListHighlight() per evidenziarli.
+    // Come nella versione LVGL: il trackball deve poter raggiungere anche
+    // "Scansiona di nuovo" e "Disconnetti", non solo le voci di rete.
     enum class ListFocus {
         Rescan,
         Disconnect,
@@ -39,41 +44,52 @@ namespace {
     };
 
     ListFocus listFocus = ListFocus::Network;
-    lv_obj_t* rescanBtnRef = nullptr;
-    lv_obj_t* disconnectBtnRef = nullptr;
-
-    lv_obj_t* passwordScreen = nullptr;
-    lv_obj_t* passwordTextarea = nullptr;
-    lv_obj_t* passwordEyeLabel = nullptr;
-    String passwordBuffer;
-    bool passwordVisible = false;
-
-    lv_obj_t* statusScreen = nullptr;
-    lv_obj_t* statusLabel = nullptr;
+    int topVisibleRow = 0;
+    int dragAccumY = 0;
 
     String selectedSsid;
     bool selectedOpen = false;
 
-    // Password usata per il tentativo di connessione in corso: salvata in
-    // WifiManager solo se la connessione va a buon fine (vedi
-    // handleConnectingUpdate). Per una rete aperta resta vuota.
     String pendingPassword;
     bool credentialsSavedForAttempt = false;
 
-    // Ultimo stato mostrato in handleConnectingUpdate(): senza questa
-    // cache, lv_label_set_text() veniva richiamato (rialloca nel pool
-    // LVGL) ad ogni ciclo di App::update() mentre si resta in attesa
-    // della connessione, anche se il testo non cambia mai finche' lo
-    // stato non transita - vedi la stessa correzione in NetGuardUI.cpp.
+    String passwordBuffer;
+    bool passwordVisible = false;
+
     WifiManager::ConnectionState lastShownConnectingState =
         WifiManager::ConnectionState::Connected; // valore "neutro": forza il primo aggiornamento
+
+    constexpr int16_t BTN_X = 8;
+    constexpr int16_t BTN_W = 304;
+    constexpr int16_t BTN_H = 28;
+    constexpr int16_t ROW_H = 28;
+    constexpr int16_t STATUS_H = 36;
+
+    constexpr int16_t PASS_FIELD_X = 8;
+    constexpr int16_t PASS_FIELD_W = 250;
+    constexpr int16_t PASS_FIELD_H = 28;
+    int16_t passFieldY() { return Display::DD_HEADER_H + 30; }
+
+    // Indice zona -> indice rete (per le righe della lista) o -1 se la
+    // zona non e' una riga (rescan/disconnetti/altro). zoneIsDelete[]
+    // distingue il tocco sul cestino "dimentica" dal tocco sul resto
+    // della riga (connetti), registrato PRIMA nella stessa zona cosi'
+    // TouchUI::pollTap() lo trova per primo (vince l'id piu' basso).
+    int zoneNetIndex[TouchUI::MAX_ZONES];
+    bool zoneIsDelete[TouchUI::MAX_ZONES];
+
+    int rescanZone = -1;
+    int disconnectZone = -1;
+    int eyeZone = -1;
+    int cancelZone = -1;
 
     void showListScreen();
     void showPasswordScreen();
     void showConnectingScreen();
-    void rescanButtonCb(lv_event_t* event);
-    void disconnectButtonCb(lv_event_t* event);
-    void forgetButtonCb(lv_event_t* event);
+    void drawListScreen();
+    void showScanningScreen();
+    void attemptConnectToSelected();
+    void rescan();
 
     void closeAndReturnToMenu() {
         mode = Mode::Closed;
@@ -81,51 +97,176 @@ namespace {
         Menu::showMain();
     }
 
-    // Bordo spesso e acceso sul bottone attualmente a fuoco, normale su
-    // tutti gli altri: stesso trucco usato in SettingsUI per le due righe
-    // di luminosita'. Qui serve a rendere visibile il focus anche su
-    // rescan/disconnetti, che non hanno un colore di sfondo dedicato.
-    void setFocusBorder(lv_obj_t* obj, bool focused) {
-        if (obj == nullptr) {
-            return;
-        }
-        lv_obj_set_style_border_width(obj, focused ? 3 : 1, LV_PART_MAIN);
-        lv_obj_set_style_border_color(
-            obj,
-            focused ? lv_color_hex(0xFFFFFF) : Display::COLOR_ACCENT,
-            LV_PART_MAIN
-        );
+    void drawHeaderTitle(const char* title) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        gfx->print(title);
+
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(228, Display::DD_HEADER_H + 8);
+        gfx->print("[B] INDIETRO");
     }
 
-    void updateListHighlight() {
-        setFocusBorder(rescanBtnRef, listFocus == ListFocus::Rescan);
-        setFocusBorder(disconnectBtnRef, listFocus == ListFocus::Disconnect);
+    void drawButton(int16_t y, const char* label, bool focused) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->drawRect(BTN_X, y, BTN_W, BTN_H, focused ? Display::DD_ACCENT : Display::DD_ACCENT_DIM);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(BTN_X + 12, y + BTN_H / 2 - 3);
+        gfx->print(label);
+    }
 
-        for (int i = 0; i < networkCount; i++) {
-            if (networkButtons[i] == nullptr) {
-                continue;
+    // Layout dinamico: l'altezza sopra la lista cambia se c'e' o no il
+    // riquadro "connesso" (dipende dallo stato WiFi in tempo reale, puo'
+    // cambiare mentre la schermata lista e' aperta, es. dopo Disconnetti).
+    int16_t computeListTop(bool connected) {
+        int16_t y = Display::DD_HEADER_H + 24;
+        if (connected) {
+            y += STATUS_H + 4;
+        }
+        y += BTN_H + 4;
+        return y;
+    }
+
+    int computeVisibleRows(int16_t listTop) {
+        int rows = (240 - listTop) / ROW_H;
+        return rows > 0 ? rows : 0;
+    }
+
+    void ensureNetworkVisible() {
+        if (listFocus != ListFocus::Network) {
+            return;
+        }
+        int16_t listTop = computeListTop(ConnStatus::isWifiConnected());
+        int visibleRows = computeVisibleRows(listTop);
+        if (selectedIndex < topVisibleRow) {
+            topVisibleRow = selectedIndex;
+        } else if (selectedIndex >= topVisibleRow + visibleRows) {
+            topVisibleRow = selectedIndex - visibleRows + 1;
+        }
+    }
+
+    void drawNetworkRow(int index, int16_t rowY) {
+        Arduino_GFX* gfx = Display::getGfx();
+        WifiManager::Network net = WifiManager::getNetwork(index);
+        bool known = !net.open && WifiManager::hasSavedPassword(net.ssid);
+        bool selected = (listFocus == ListFocus::Network && index == selectedIndex);
+
+        gfx->fillRect(0, rowY, 320, ROW_H, Display::DD_BG);
+        if (selected) {
+            gfx->fillRect(2, rowY + 4, 4, ROW_H - 8, Display::DD_ACCENT);
+        }
+
+        uint16_t nameColor = known ? gfx->color565(0x2E, 0xCC, 0x71) : Display::DD_ACCENT;
+        gfx->setTextColor(nameColor);
+        gfx->setCursor(16, rowY + ROW_H / 2 - 3);
+        String displayName = (net.ssid.length() > 0) ? net.ssid : "(nascosta)";
+        gfx->print(displayName);
+
+        if (net.open) {
+            gfx->setTextColor(Display::DD_TEXT_DIM);
+            gfx->setCursor(230, rowY + ROW_H / 2 - 3);
+            gfx->print("APERTA");
+        }
+
+        if (known) {
+            uint16_t delColor = gfx->color565(0xE7, 0x4C, 0x3C);
+            int16_t delX = 270;
+            gfx->drawRect(delX, rowY + 2, 40, ROW_H - 4, delColor);
+            gfx->setTextColor(delColor);
+            gfx->setCursor(delX + 4, rowY + ROW_H / 2 - 3);
+            gfx->print("DEL");
+
+            int z = TouchUI::addZone(delX, rowY + 2, 40, ROW_H - 4);
+            if (z >= 0) {
+                zoneNetIndex[z] = index;
+                zoneIsDelete[z] = true;
             }
+        }
 
-            bool selected = (listFocus == ListFocus::Network && i == selectedIndex);
-            lv_obj_set_style_bg_color(
-                networkButtons[i],
-                selected ? Display::COLOR_ACCENT : lv_color_hex(0x0A1A2A),
-                LV_PART_MAIN
+        int rz = TouchUI::addZone(BTN_X, rowY, BTN_W, ROW_H);
+        if (rz >= 0) {
+            zoneNetIndex[rz] = index;
+            zoneIsDelete[rz] = false;
+        }
+    }
+
+    void drawListScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("WIFI");
+
+        TouchUI::clearZones();
+        rescanZone = -1;
+        disconnectZone = -1;
+        for (int i = 0; i < TouchUI::MAX_ZONES; i++) {
+            zoneNetIndex[i] = -1;
+            zoneIsDelete[i] = false;
+        }
+
+        bool connected = ConnStatus::isWifiConnected();
+        int16_t y = Display::DD_HEADER_H + 24;
+
+        if (connected) {
+            gfx->drawRect(BTN_X, y, BTN_W, STATUS_H, Display::DD_ACCENT_DIM);
+            gfx->setTextColor(Display::DD_TEXT);
+            gfx->setCursor(BTN_X + 6, y + 4);
+            String ssidLine = "CONNESSO: " + WifiManager::getConnectedSsid();
+            gfx->print(ssidLine);
+            gfx->setTextColor(Display::DD_TEXT_DIM);
+            gfx->setCursor(BTN_X + 6, y + 18);
+            String ipLine = "IP: " + WifiManager::getLocalIP() + " [TOCCA=DISCONNETTI]";
+            gfx->print(ipLine);
+
+            disconnectZone = TouchUI::addZone(BTN_X, y, BTN_W, STATUS_H);
+            y += STATUS_H + 4;
+        }
+
+        drawButton(y, "[ RESCAN ] SCANSIONA DI NUOVO", listFocus == ListFocus::Rescan);
+        rescanZone = TouchUI::addZone(BTN_X, y, BTN_W, BTN_H);
+        y += BTN_H + 4;
+
+        int16_t listTop = y;
+        int visibleRows = computeVisibleRows(listTop);
+
+        if (networkCount == 0) {
+            Display::drawWrappedText(
+                8, listTop + 4, 304,
+                "Nessuna rete trovata.\nTocca Scansiona per riprovare.",
+                Display::DD_TEXT_DIM
             );
+            return;
         }
 
-        lv_obj_t* toScrollTo = nullptr;
-        if (listFocus == ListFocus::Rescan) {
-            toScrollTo = rescanBtnRef;
-        } else if (listFocus == ListFocus::Disconnect) {
-            toScrollTo = disconnectBtnRef;
-        } else if (networkCount > 0) {
-            toScrollTo = networkButtons[selectedIndex];
+        int lastVisible = topVisibleRow + visibleRows - 1;
+        if (lastVisible >= networkCount) {
+            lastVisible = networkCount - 1;
+        }
+        for (int i = topVisibleRow; i <= lastVisible; i++) {
+            drawNetworkRow(i, listTop + (i - topVisibleRow) * ROW_H);
+        }
+    }
+
+    void showListScreen() {
+        mode = Mode::List;
+        Input::setTextEntryMode(false);
+
+        networkCount = WifiManager::getNetworkCount();
+        if (networkCount > MAX_NETWORKS_SHOWN) {
+            networkCount = MAX_NETWORKS_SHOWN;
         }
 
-        if (toScrollTo != nullptr) {
-            lv_obj_scroll_to_view(toScrollTo, LV_ANIM_OFF);
-        }
+        selectedIndex = 0;
+        topVisibleRow = 0;
+        dragAccumY = 0;
+        listFocus = (networkCount > 0) ? ListFocus::Network : ListFocus::Rescan;
+
+        drawListScreen();
     }
 
     void attemptConnectToSelected() {
@@ -142,8 +283,6 @@ namespace {
             WifiManager::connect(selectedSsid, pendingPassword);
             showConnectingScreen();
         } else if (WifiManager::hasSavedPassword(selectedSsid)) {
-            // Rete gia' usata in passato: ci si riconnette subito con la
-            // password salvata, senza richiederla di nuovo.
             pendingPassword = WifiManager::getSavedPassword(selectedSsid);
             WifiManager::connect(selectedSsid, pendingPassword);
             showConnectingScreen();
@@ -152,13 +291,10 @@ namespace {
         }
     }
 
-    // Chiamata SOLO subito dopo che una scansione e' appena terminata:
-    // se fra i risultati c'e' almeno una rete gia' nota (password
-    // salvata) e non si e' gia' connessi a qualcosa, ci si connette
-    // automaticamente a quella con segnale piu' forte, senza bisogno di
-    // selezionarla a mano. Le altre volte che si torna alla lista
-    // (annulla password, disconnetti, tentativo fallito...) mostrano
-    // solo l'elenco, senza forzare una nuova connessione a sorpresa.
+    // Chiamata SOLO subito dopo che una scansione e' appena terminata: se
+    // fra i risultati c'e' almeno una rete gia' nota e non si e' gia'
+    // connessi a qualcosa, ci si connette automaticamente a quella con
+    // segnale piu' forte, senza bisogno di selezionarla a mano.
     void showListScreenAfterScan() {
         if (!ConnStatus::isWifiConnected()) {
             int count = WifiManager::getNetworkCount();
@@ -174,8 +310,6 @@ namespace {
                 if (!WifiManager::hasSavedPassword(net.ssid)) {
                     continue;
                 }
-                // RSSI in dBm (negativo): piu' vicino a 0 = segnale
-                // migliore, quindi "maggiore" e' davvero "piu' forte".
                 if (bestIndex < 0 || net.rssi > bestRssi) {
                     bestIndex = i;
                     bestRssi = net.rssi;
@@ -193,376 +327,27 @@ namespace {
         showListScreen();
     }
 
-    void networkButtonClickedCb(lv_event_t* event) {
-        lv_obj_t* button = static_cast<lv_obj_t*>(lv_event_get_target(event));
-        if (button == nullptr) {
-            return;
-        }
-
-        int index = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(button)));
-        if (index < 0 || index >= networkCount) {
-            return;
-        }
-
-        selectedIndex = index;
-        listFocus = ListFocus::Network;
-        updateListHighlight();
-
-        // Come nel menu principale: mostra l'evidenziazione un istante
-        // prima di aprire la voce, anche quando arrivata da un tap.
-        Display::update();
-        delay(150);
-
-        attemptConnectToSelected();
-    }
-
-    void forgetButtonCb(lv_event_t* event) {
-        lv_obj_t* button = static_cast<lv_obj_t*>(lv_event_get_target(event));
-        if (button == nullptr) {
-            return;
-        }
-
-        int index = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(button)));
-        if (index < 0 || index >= networkCount) {
-            return;
-        }
-
-        WifiManager::Network net = WifiManager::getNetwork(index);
-        WifiManager::forgetPassword(net.ssid);
-
-        // Ricostruisce la lista: il cestino scompare per questa rete
-        // (non ha piu' una password salvata) e la prossima selezione
-        // richiedera' di nuovo la password.
-        showListScreen();
-    }
-
-    void buildListScreen() {
-        lv_obj_t* content = nullptr;
-        listScreen = Display::createScreen("WiFi", &content, closeAndReturnToMenu);
-
-        // Azzerati ad ogni ricostruzione: se la schermata precedente
-        // aveva un bottone disconnetti (WiFi connesso) e questa non
-        // (es. ci siamo appena disconnessi), il riferimento vecchio non
-        // deve restare in giro puntando a un oggetto ormai cancellato.
-        rescanBtnRef = nullptr;
-        disconnectBtnRef = nullptr;
-
-        lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scroll_dir(content, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
-
-        lv_obj_set_layout(content, LV_LAYOUT_FLEX);
-        lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(content, 4, LV_PART_MAIN);
-
-        // Riga di stato: rete attuale + IP locale se connessi, con un
-        // bottone per disconnettersi (risparmia batteria quando il WiFi
-        // non serve). ConnStatus::isWifiConnected() legge WiFi.status()
-        // in tempo reale, quindi resta sempre allineata alla realta'.
-        if (ConnStatus::isWifiConnected()) {
-            lv_obj_t* statusBox = lv_obj_create(content);
-            lv_obj_remove_style_all(statusBox);
-            lv_obj_set_width(statusBox, LV_PCT(100));
-            lv_obj_set_height(statusBox, LV_SIZE_CONTENT);
-            lv_obj_set_style_border_width(statusBox, 1, LV_PART_MAIN);
-            lv_obj_set_style_border_color(statusBox, Display::COLOR_ACCENT, LV_PART_MAIN);
-            lv_obj_set_style_radius(statusBox, 4, LV_PART_MAIN);
-            lv_obj_set_style_pad_all(statusBox, 6, LV_PART_MAIN);
-            lv_obj_clear_flag(statusBox, LV_OBJ_FLAG_SCROLLABLE);
-
-            lv_obj_t* statusText = lv_label_create(statusBox);
-            String info = "Connesso: " + WifiManager::getConnectedSsid()
-                + "\nIP: " + WifiManager::getLocalIP();
-            lv_label_set_text(statusText, info.c_str());
-            lv_obj_set_style_text_color(statusText, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(statusText, &lv_font_montserrat_14, 0);
-            lv_obj_align(statusText, LV_ALIGN_TOP_LEFT, 0, 0);
-
-            lv_obj_t* disconnectBtn = lv_btn_create(statusBox);
-            lv_obj_set_size(disconnectBtn, 90, 30);
-            lv_obj_align(disconnectBtn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-            lv_obj_set_style_bg_color(disconnectBtn, lv_color_hex(0x5A1A1A), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(disconnectBtn, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_border_color(disconnectBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-            lv_obj_set_style_border_width(disconnectBtn, 1, LV_PART_MAIN);
-            lv_obj_set_style_radius(disconnectBtn, 4, LV_PART_MAIN);
-            lv_obj_add_event_cb(disconnectBtn, disconnectButtonCb, LV_EVENT_CLICKED, nullptr);
-
-            lv_obj_t* disconnectLabel = lv_label_create(disconnectBtn);
-            lv_label_set_text(disconnectLabel, "Disconn.");
-            lv_obj_center(disconnectLabel);
-            lv_obj_set_style_text_color(disconnectLabel, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(disconnectLabel, &lv_font_montserrat_14, 0);
-
-            disconnectBtnRef = disconnectBtn;
-        }
-
-        // Bottone scansiona di nuovo: sempre presente, per aggiornare
-        // l'elenco senza dover uscire e rientrare nella schermata WiFi.
-        lv_obj_t* rescanBtn = lv_btn_create(content);
-        lv_obj_set_width(rescanBtn, LV_PCT(100));
-        lv_obj_set_height(rescanBtn, 34);
-        lv_obj_set_style_bg_color(rescanBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(rescanBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(rescanBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(rescanBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(rescanBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(rescanBtn, rescanButtonCb, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t* rescanLabel = lv_label_create(rescanBtn);
-        lv_label_set_text(rescanLabel, LV_SYMBOL_REFRESH " Scansiona di nuovo");
-        lv_obj_center(rescanLabel);
-        lv_obj_set_style_text_color(rescanLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(rescanLabel, &lv_font_montserrat_14, 0);
-
-        rescanBtnRef = rescanBtn;
-
-        networkCount = WifiManager::getNetworkCount();
-        if (networkCount > MAX_NETWORKS_SHOWN) {
-            networkCount = MAX_NETWORKS_SHOWN;
-        }
-
-        if (networkCount == 0) {
-            lv_obj_t* label = lv_label_create(content);
-            lv_label_set_text(label, "Nessuna rete trovata.\nTorna indietro per riprovare.");
-            lv_obj_set_style_text_color(label, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
-        }
-
-        for (int i = 0; i < networkCount; i++) {
-            WifiManager::Network net = WifiManager::getNetwork(i);
-
-            // Verde per le reti gia' note (password salvata, oltre al
-            // cestino per dimenticarla), azzurro per le altre: un modo
-            // per riconoscerle a colpo d'occhio senza leggere le icone.
-            bool known = !net.open && WifiManager::hasSavedPassword(net.ssid);
-
-            lv_obj_t* button = lv_btn_create(content);
-            lv_obj_set_width(button, LV_PCT(100));
-            lv_obj_set_height(button, 36);
-            lv_obj_set_style_bg_color(button, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN);
-            lv_obj_set_style_border_color(
-                button,
-                known ? lv_color_hex(0x2ECC71) : Display::COLOR_ACCENT,
-                LV_PART_MAIN
-            );
-            lv_obj_set_style_border_width(button, 1, LV_PART_MAIN);
-            lv_obj_set_style_radius(button, 4, LV_PART_MAIN);
-
-            lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
-            lv_obj_add_event_cb(button, networkButtonClickedCb, LV_EVENT_CLICKED, nullptr);
-
-            lv_obj_set_layout(button, LV_LAYOUT_FLEX);
-            lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(
-                button,
-                LV_FLEX_ALIGN_SPACE_BETWEEN,
-                LV_FLEX_ALIGN_CENTER,
-                LV_FLEX_ALIGN_CENTER
-            );
-            lv_obj_set_style_pad_left(button, 10, 0);
-            lv_obj_set_style_pad_right(button, 10, 0);
-
-            lv_obj_t* nameLabel = lv_label_create(button);
-            String displayName = (net.ssid.length() > 0) ? net.ssid : "(nascosta)";
-            lv_label_set_text(nameLabel, displayName.c_str());
-            lv_obj_set_style_text_color(nameLabel, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(nameLabel, &lv_font_montserrat_14, 0);
-
-            // Icona wifi/lucchetto +, se c'e' una password salvata per
-            // questa rete, un piccolo cestino per "dimenticarla" (utile
-            // se il router e' stato riconfigurato con una password
-            // diversa: senza questo non ci si potrebbe piu' riconnettere,
-            // perche' verrebbe sempre riprovata quella vecchia salvata).
-            lv_obj_t* rightGroup = lv_obj_create(button);
-            lv_obj_remove_style_all(rightGroup);
-            lv_obj_set_size(rightGroup, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_obj_set_layout(rightGroup, LV_LAYOUT_FLEX);
-            lv_obj_set_flex_flow(rightGroup, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(
-                rightGroup,
-                LV_FLEX_ALIGN_END,
-                LV_FLEX_ALIGN_CENTER,
-                LV_FLEX_ALIGN_CENTER
-            );
-            lv_obj_set_style_pad_column(rightGroup, 8, 0);
-            lv_obj_clear_flag(rightGroup, LV_OBJ_FLAG_SCROLLABLE);
-
-            if (known) {
-                lv_obj_t* forgetBtn = lv_btn_create(rightGroup);
-                lv_obj_set_size(forgetBtn, 26, 26);
-                lv_obj_set_style_bg_color(forgetBtn, lv_color_hex(0x5A1A1A), LV_PART_MAIN);
-                lv_obj_set_style_bg_opa(forgetBtn, LV_OPA_COVER, LV_PART_MAIN);
-                lv_obj_set_style_border_width(forgetBtn, 0, LV_PART_MAIN);
-                lv_obj_set_style_radius(forgetBtn, 4, LV_PART_MAIN);
-                lv_obj_set_style_pad_all(forgetBtn, 0, LV_PART_MAIN);
-                // Indice (non lo ssid: una String non e' sicura da tenere
-                // come puntatore grezzo nello user_data) - lo stesso
-                // schema usato per il bottone rete stesso.
-                lv_obj_set_user_data(forgetBtn, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
-                lv_obj_add_event_cb(forgetBtn, forgetButtonCb, LV_EVENT_CLICKED, nullptr);
-
-                lv_obj_t* forgetIcon = lv_label_create(forgetBtn);
-                lv_label_set_text(forgetIcon, LV_SYMBOL_TRASH);
-                lv_obj_set_style_text_color(forgetIcon, Display::COLOR_TEXT, 0);
-                lv_obj_set_style_text_font(forgetIcon, &lv_font_montserrat_14, 0);
-                lv_obj_center(forgetIcon);
-            }
-
-            lv_obj_t* iconLabel = lv_label_create(rightGroup);
-            lv_label_set_text(iconLabel, net.open ? LV_SYMBOL_WIFI : LV_SYMBOL_WIFI " " LV_SYMBOL_EYE_CLOSE);
-            lv_obj_set_style_text_color(iconLabel, Display::COLOR_ACCENT, 0);
-            lv_obj_set_style_text_font(iconLabel, &lv_font_montserrat_14, 0);
-
-            networkButtons[i] = button;
-        }
-
-        selectedIndex = 0;
-        // Se non ci sono reti, non ha senso partire col focus su "Network"
-        // (non c'e' nulla da selezionare li'): si parte da Rescan, cosi'
-        // Select riprova subito la scansione senza dover premere Su prima.
-        listFocus = (networkCount > 0) ? ListFocus::Network : ListFocus::Rescan;
-        updateListHighlight();
-    }
-
-    void showListScreen() {
-        mode = Mode::List;
-        Input::setTextEntryMode(false);
-
-        if (listScreen != nullptr) {
-            lv_obj_del(listScreen);
-            listScreen = nullptr;
-        }
-        for (int i = 0; i < MAX_NETWORKS_SHOWN; i++) {
-            networkButtons[i] = nullptr;
-        }
-
-        buildListScreen();
-        lv_scr_load(listScreen);
-    }
-
-    void buildStatusScreen(const char* title, void (*onBack)()) {
-        if (statusScreen != nullptr) {
-            lv_obj_del(statusScreen);
-            statusScreen = nullptr;
-        }
-
-        lv_obj_t* content = nullptr;
-        statusScreen = Display::createScreen(title, &content, onBack);
-
-        statusLabel = lv_label_create(content);
-        lv_obj_set_style_text_font(statusLabel, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(statusLabel, Display::COLOR_TEXT, 0);
-        lv_label_set_long_mode(statusLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(statusLabel, LV_PCT(100));
-        lv_obj_align(statusLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+    void drawScanningScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("WIFI");
+        Display::drawWrappedText(
+            8, Display::DD_HEADER_H + 26, 304,
+            "Scansione delle reti in corso...",
+            Display::DD_TEXT
+        );
     }
 
     void showScanningScreen() {
         mode = Mode::Scanning;
         Input::setTextEntryMode(false);
-        buildStatusScreen("WiFi", closeAndReturnToMenu);
-        lv_label_set_text(statusLabel, "Scansione delle reti in corso...");
-        lv_scr_load(statusScreen);
+        drawScanningScreen();
     }
 
-    // Riusata sia dall'apertura iniziale di WifiUI sia dal bottone
-    // "Scansiona di nuovo" nella lista.
     void rescan() {
         WifiManager::startScan();
         showScanningScreen();
-    }
-
-    void rescanButtonCb(lv_event_t* event) {
-        (void)event;
-        rescan();
-    }
-
-    void disconnectButtonCb(lv_event_t* event) {
-        (void)event;
-        WifiManager::disconnect();
-        showListScreen();
-    }
-
-    void showConnectingScreen() {
-        mode = Mode::Connecting;
-        credentialsSavedForAttempt = false;
-        Input::setTextEntryMode(false);
-        buildStatusScreen("WiFi", showListScreen);
-        String msg = "Connessione a " + selectedSsid + " in corso...";
-        lv_label_set_text(statusLabel, msg.c_str());
-        lv_scr_load(statusScreen);
-    }
-
-    void toggleEyeCb(lv_event_t* event) {
-        (void)event;
-        passwordVisible = !passwordVisible;
-        lv_textarea_set_password_mode(passwordTextarea, !passwordVisible);
-
-        if (passwordEyeLabel != nullptr) {
-            lv_label_set_text(passwordEyeLabel, passwordVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
-        }
-    }
-
-    void buildPasswordScreen() {
-        if (passwordScreen != nullptr) {
-            lv_obj_del(passwordScreen);
-            passwordScreen = nullptr;
-        }
-
-        lv_obj_t* content = nullptr;
-        String title = "Password: " + selectedSsid;
-        passwordScreen = Display::createScreen(title.c_str(), &content, showListScreen);
-
-        passwordBuffer = "";
-        passwordVisible = false;
-
-        passwordTextarea = lv_textarea_create(content);
-        lv_textarea_set_password_mode(passwordTextarea, true);
-        lv_textarea_set_one_line(passwordTextarea, true);
-        lv_textarea_set_text(passwordTextarea, "");
-        lv_obj_set_width(passwordTextarea, LV_PCT(100) - 40);
-        lv_obj_align(passwordTextarea, LV_ALIGN_TOP_LEFT, 0, 0);
-
-        // Tasto "occhio": mostra/nasconde la password digitata. Utile
-        // perche' senza schermo non c'e' altro modo per controllare di
-        // aver scritto la password giusta prima di connettersi.
-        lv_obj_t* eyeBtn = lv_btn_create(content);
-        lv_obj_set_size(eyeBtn, 36, 36);
-        lv_obj_align_to(eyeBtn, passwordTextarea, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
-        lv_obj_set_style_bg_color(eyeBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(eyeBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(eyeBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(eyeBtn, 1, LV_PART_MAIN);
-        lv_obj_add_event_cb(eyeBtn, toggleEyeCb, LV_EVENT_CLICKED, nullptr);
-
-        passwordEyeLabel = lv_label_create(eyeBtn);
-        lv_label_set_text(passwordEyeLabel, LV_SYMBOL_EYE_CLOSE);
-        lv_obj_set_style_text_color(passwordEyeLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(passwordEyeLabel, &lv_font_montserrat_14, 0);
-        lv_obj_center(passwordEyeLabel);
-
-        lv_obj_t* hint = lv_label_create(content);
-        lv_label_set_text(hint, "Scrivi con la tastiera fisica, poi Invio per connettere.");
-        lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(hint, Display::COLOR_TEXT, 0);
-        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(hint, LV_PCT(100));
-        lv_obj_align_to(hint, passwordTextarea, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
-
-        // Il bottone "Indietro" standard (passato a createScreen sopra)
-        // e' l'unico modo garantito per annullare qui: in modo
-        // "inserimento testo" la tastiera fisica non genera piu' l'evento
-        // Back (altrimenti una password con la lettera 'b' non si
-        // potrebbe scrivere), quindi serve per forza un bottone toccabile.
-    }
-
-    void showPasswordScreen() {
-        mode = Mode::Password;
-        Input::setTextEntryMode(true);
-        buildPasswordScreen();
-        lv_scr_load(passwordScreen);
     }
 
     void handleScanningUpdate() {
@@ -576,15 +361,72 @@ namespace {
         }
     }
 
-    // Ordine di navigazione su/giu' col trackball, dall'alto verso il
-    // basso (stesso ordine in cui i widget compaiono nello schermo):
-    // Disconnetti (se presente) -> Scansiona -> voci di rete.
+    // Stesso ordine di navigazione su/giu' della versione LVGL, dall'alto
+    // verso il basso: Disconnetti (se presente) -> Scansiona -> reti.
     void handleListInput() {
-        InputEvent event = Input::getEvent();
-        if (event == InputEvent::None) {
-            return;
+        int16_t dragDelta = TouchUI::pollDragDeltaY();
+        if (dragDelta != 0 && networkCount > 0) {
+            dragAccumY += dragDelta;
+
+            int16_t listTop = computeListTop(ConnStatus::isWifiConnected());
+            int visibleRows = computeVisibleRows(listTop);
+            int maxTopRow = networkCount - visibleRows;
+            if (maxTopRow < 0) {
+                maxTopRow = 0;
+            }
+
+            bool scrolled = false;
+            while (dragAccumY >= ROW_H && topVisibleRow > 0) {
+                topVisibleRow--;
+                dragAccumY -= ROW_H;
+                scrolled = true;
+            }
+            while (dragAccumY <= -ROW_H && topVisibleRow < maxTopRow) {
+                topVisibleRow++;
+                dragAccumY += ROW_H;
+                scrolled = true;
+            }
+            if (topVisibleRow == 0 && dragAccumY > ROW_H) {
+                dragAccumY = ROW_H;
+            }
+            if (topVisibleRow == maxTopRow && dragAccumY < -ROW_H) {
+                dragAccumY = -ROW_H;
+            }
+
+            if (scrolled) {
+                drawListScreen();
+            }
         }
 
+        int tapped = TouchUI::pollTap();
+        if (tapped >= 0) {
+            if (tapped == disconnectZone) {
+                WifiManager::disconnect();
+                showListScreen();
+                return;
+            }
+            if (tapped == rescanZone) {
+                rescan();
+                return;
+            }
+            if (zoneNetIndex[tapped] >= 0) {
+                int idx = zoneNetIndex[tapped];
+                if (zoneIsDelete[tapped]) {
+                    WifiManager::Network net = WifiManager::getNetwork(idx);
+                    WifiManager::forgetPassword(net.ssid);
+                    showListScreen();
+                } else {
+                    selectedIndex = idx;
+                    listFocus = ListFocus::Network;
+                    drawListScreen();
+                    delay(150);
+                    attemptConnectToSelected();
+                }
+                return;
+            }
+        }
+
+        InputEvent event = Input::getEvent();
         switch (event) {
             case InputEvent::Up:
                 if (listFocus == ListFocus::Network) {
@@ -594,14 +436,12 @@ namespace {
                         listFocus = ListFocus::Rescan;
                     }
                 } else if (listFocus == ListFocus::Rescan) {
-                    if (disconnectBtnRef != nullptr) {
+                    if (ConnStatus::isWifiConnected()) {
                         listFocus = ListFocus::Disconnect;
                     }
-                    // Se non c'e' il bottone disconnetti, Rescan e' gia'
-                    // il punto piu' in alto: nessun altro posto dove andare.
                 }
-                // Da Disconnect non si sale oltre: e' il punto piu' in alto.
-                updateListHighlight();
+                ensureNetworkVisible();
+                drawListScreen();
                 break;
 
             case InputEvent::Down:
@@ -612,14 +452,13 @@ namespace {
                         listFocus = ListFocus::Network;
                         selectedIndex = 0;
                     }
-                    // Senza reti trovate, Rescan resta il punto piu' in
-                    // basso: nessun altro posto dove andare.
                 } else if (listFocus == ListFocus::Network) {
                     if (selectedIndex < networkCount - 1) {
                         selectedIndex++;
                     }
                 }
-                updateListHighlight();
+                ensureNetworkVisible();
+                drawListScreen();
                 break;
 
             case InputEvent::Select:
@@ -629,7 +468,7 @@ namespace {
                     WifiManager::disconnect();
                     showListScreen();
                 } else if (networkCount > 0) {
-                    Display::update();
+                    drawListScreen();
                     delay(150);
                     attemptConnectToSelected();
                 }
@@ -644,70 +483,114 @@ namespace {
         }
     }
 
+    void drawPasswordScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        String title = "PASSWORD: " + selectedSsid;
+        gfx->print(title);
+
+        TouchUI::clearZones();
+
+        int16_t fieldY = passFieldY();
+        TextInputUI::draw(PASS_FIELD_X, fieldY, PASS_FIELD_W, PASS_FIELD_H, passwordBuffer, !passwordVisible);
+
+        int16_t eyeX = PASS_FIELD_X + PASS_FIELD_W + 4;
+        gfx->drawRect(eyeX, fieldY, 40, PASS_FIELD_H, Display::DD_ACCENT_DIM);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(eyeX + 4, fieldY + PASS_FIELD_H / 2 - 3);
+        gfx->print(passwordVisible ? "NASC." : "VEDI");
+        eyeZone = TouchUI::addZone(eyeX, fieldY, 40, PASS_FIELD_H);
+
+        Display::drawWrappedText(
+            8, fieldY + PASS_FIELD_H + 10, 304,
+            "Scrivi con la tastiera fisica, poi Invio per connettere.",
+            Display::DD_TEXT_DIM
+        );
+
+        drawButton(200, "[ ANNULLA ]", true);
+        cancelZone = TouchUI::addZone(BTN_X, 200, BTN_W, BTN_H);
+    }
+
+    void showPasswordScreen() {
+        mode = Mode::Password;
+        Input::setTextEntryMode(true);
+        passwordBuffer = "";
+        passwordVisible = false;
+        drawPasswordScreen();
+    }
+
     void handlePasswordInput() {
-        InputEvent event = Input::getEvent();
-        if (event == InputEvent::None) {
+        int tapped = TouchUI::pollTap();
+        if (tapped == eyeZone) {
+            passwordVisible = !passwordVisible;
+            drawPasswordScreen();
+            return;
+        }
+        if (tapped == cancelZone) {
+            showListScreen();
             return;
         }
 
-        if (event == InputEvent::Select) {
-            // Invio sulla tastiera fisica: prova a connettersi con la
-            // password digitata finora.
+        TextInputUI::Result result = TextInputUI::handleKey(passwordBuffer, MAX_PASSWORD_LEN);
+        if (result == TextInputUI::Result::Changed) {
+            TextInputUI::draw(PASS_FIELD_X, passFieldY(), PASS_FIELD_W, PASS_FIELD_H, passwordBuffer, !passwordVisible);
+        } else if (result == TextInputUI::Result::Confirmed) {
             pendingPassword = passwordBuffer;
             WifiManager::connect(selectedSsid, pendingPassword);
             showConnectingScreen();
-            return;
         }
+    }
 
-        if (event == InputEvent::Key) {
-            char key = Input::getKey();
+    void drawConnectingText(const String& text) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillRect(0, Display::DD_HEADER_H + 24, 320, 40, Display::DD_BG);
+        Display::drawWrappedText(8, Display::DD_HEADER_H + 26, 304, text, Display::DD_TEXT);
+    }
 
-            if (key == 0x08 || key == 0x7F) {
-                // Backspace (i codici comuni per la cancellazione sulla
-                // tastiera fisica del T-Deck).
-                if (passwordBuffer.length() > 0) {
-                    passwordBuffer.remove(passwordBuffer.length() - 1);
-                }
-            } else if (key >= 32 && key < 127) {
-                // Solo caratteri ASCII stampabili: una password WiFi non
-                // ha senso con caratteri di controllo.
-                passwordBuffer += key;
-            }
+    void showConnectingScreen() {
+        mode = Mode::Connecting;
+        credentialsSavedForAttempt = false;
+        Input::setTextEntryMode(false);
+        // Sentinella "neutra": forza handleConnectingUpdate() a disegnare
+        // subito il primo stato invece di aspettare che cambi.
+        lastShownConnectingState = WifiManager::ConnectionState::Connected;
 
-            lv_textarea_set_text(passwordTextarea, passwordBuffer.c_str());
-        }
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("WIFI");
+        drawConnectingText("Connessione a " + selectedSsid + " in corso...");
     }
 
     void handleConnectingUpdate() {
         WifiManager::ConnectionState state = WifiManager::getConnectionState();
 
         if (state == WifiManager::ConnectionState::Connected) {
-            // Salva la password solo la prima volta che si osserva lo
-            // stato Connected per questo tentativo (lo stato resterebbe
-            // Connected anche ai cicli successivi, se non uscissimo
-            // subito da qui). Per le reti aperte pendingPassword e'
-            // vuota: salvarla comunque non fa danni e permette a
-            // hasSavedPassword() di riconoscerla come "gia' vista".
             if (!credentialsSavedForAttempt) {
                 WifiManager::saveCredentials(selectedSsid, pendingPassword);
                 credentialsSavedForAttempt = true;
             }
 
-            // Torna subito alla lista appena connesso, senza dover
-            // premere nulla: la lista mostra gia' SSID+IP in cima
-            // (vedi buildListScreen), quindi l'esito resta visibile
-            // comunque, senza un passaggio in piu' da confermare.
+            // Torna subito alla lista appena connesso, senza dover premere
+            // nulla: la lista mostra gia' SSID+IP in cima.
             showListScreen();
             return;
         }
 
         if (state != lastShownConnectingState) {
             lastShownConnectingState = state;
-            const char* text = "Connessione in corso...";
+            String text = "Connessione in corso...";
             if (state == WifiManager::ConnectionState::Failed) {
                 text = "Connessione fallita. Premi Indietro per riprovare.";
             }
-            lv_label_set_text(statusLabel, text);
+            drawConnectingText(text);
         }
 
         if (Input::getEvent() == InputEvent::Back) {
@@ -730,6 +613,7 @@ namespace WifiUI {
             return;
         }
 
+        Display::setDirectDrawMode(true);
         Input::setTextEntryMode(false);
         rescan();
     }
