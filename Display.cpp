@@ -4,6 +4,7 @@
 #include "GPS.h"
 #include "ConnStatus.h"
 #include "CrashLog.h"
+#include "TouchUI.h"
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -531,14 +532,21 @@ bool areBuffersOk() {
 }
 
 
-// Fase 1, passo 1 della riscrittura senza LVGL (2026-09-25): prova dal
-// vivo che disegnare testo/rettangoli DIRETTAMENTE con Arduino_GFX (senza
-// passare da nessun oggetto/widget LVGL) funziona bene su schermo vero -
-// font leggibile, colori giusti, nessun artefatto - prima di costruirci
-// sopra gestione touch e resto. Disegna una volta sola, poi il normale
-// avvio LVGL prosegue e ridisegna sopra: non tocca ne' rompe nulla del
-// funzionamento attuale, e' solo una prova visiva temporanea.
-void showDirectDrawTest() {
+Arduino_GFX* getGfx() {
+    return gfx;
+}
+
+
+// Fase 1 della riscrittura senza LVGL (2026-09-25): prova dal vivo che
+// disegnare testo/rettangoli DIRETTAMENTE con Arduino_GFX (senza passare
+// da nessun oggetto/widget LVGL) funziona bene su schermo vero - font
+// leggibile, colori giusti, nessun artefatto (passo 1, validato) - e che
+// il tap touch rilevato "a mano" tramite TouchUI (passo 2) individua
+// correttamente la cella giusta. selectedIndex e' la voce da evidenziare
+// col rettangolino verticale; richiamata di nuovo ad ogni tap valido per
+// ridisegnare con la nuova selezione. Ancora una prova visiva temporanea,
+// non la logica reale dei menu.
+void showDirectDrawTest(int selectedIndex) {
     // CORRETTO (prima versione aveva colori a 24 bit scritti come se
     // fossero gia' RGB565 a 16 bit - risultato: valori troncati/sbagliati,
     // da qui "solo verde/nero oppure azzurro/nero"). gfx->color565()
@@ -597,13 +605,19 @@ void showDirectDrawTest() {
     constexpr int16_t CELL_H = 46;
     constexpr int16_t GAP = 4;
 
+    // Zone toccabili: stesse coordinate delle celle disegnate qui sotto,
+    // registrate nello stesso ordine (indice zona = indice voce menu).
+    TouchUI::clearZones();
+
     for (int i = 0; i < 8; i++) {
         int col = i % 2;
         int row = i / 2;
         int16_t x = GRID_LEFT + col * (CELL_W + GAP);
         int16_t y = GRID_TOP + row * (CELL_H + GAP);
 
-        bool selected = (i == 0);
+        TouchUI::addZone(x, y, CELL_W, CELL_H);
+
+        bool selected = (i == selectedIndex);
 
         gfx->drawRect(x, y, CELL_W, CELL_H, ACCENT_DIM);
 

@@ -2,8 +2,15 @@
 
 #include <stdint.h>
 #include <lvgl.h>
+#include <Arduino_GFX_Library.h>
 
 namespace Display {
+
+    // Accesso diretto al driver del pannello: serve ai moduli della
+    // nuova interfaccia disegnata a mano (TouchUI e' su Input, non su
+    // gfx; TextInputUI e i futuri moduli-schermata invece si', per
+    // disegnare senza passare da LVGL). Vedi project_lvgl_removal_rewrite.
+    Arduino_GFX* getGfx();
 
     // Palette condivisa (Menu.cpp la riusa per stilizzare i bottoni)
     extern const lv_color_t COLOR_BG;       // nero pieno
@@ -24,11 +31,13 @@ namespace Display {
     // dal log periodico invece.
     bool areBuffersOk();
 
-    // Fase 1, passo 1 della riscrittura senza LVGL: disegna una schermata
-    // di prova usando SOLO Arduino_GFX (nessun oggetto/widget LVGL), per
-    // verificare dal vivo leggibilita' del font e resa dei colori prima
-    // di costruire il resto sopra. Temporanea - vedi project_lvgl_removal_rewrite.
-    void showDirectDrawTest();
+    // Fase 1 della riscrittura senza LVGL: disegna una schermata di prova
+    // usando SOLO Arduino_GFX (nessun oggetto/widget LVGL), per
+    // verificare dal vivo leggibilita' del font, resa dei colori e
+    // rilevamento tap (via TouchUI) prima di costruire il resto sopra.
+    // selectedIndex = voce evidenziata col rettangolino verticale.
+    // Temporanea - vedi project_lvgl_removal_rewrite.
+    void showDirectDrawTest(int selectedIndex = 0);
 
     // Schermata di boot
     void showBootScreen();
