@@ -37,6 +37,22 @@ const char* mainItems[MENU_ITEM_COUNT] = {
 int selectedItem = 0;
 bool mainMenuVisible = true;
 
+// showMain() puo' essere richiamata DA DENTRO lv_timer_handler() (es. un
+// bottone "Indietro" toccato su una schermata ancora LVGL, come WifiUI:
+// il suo tap arriva tramite l'indev di LVGL, processato dentro
+// Display::update() -> lv_timer_handler(), quindi il callback che chiama
+// Menu::showMain() gira ANNIDATO li' dentro). Disegnare subito in quel
+// momento e' rischioso: appena il callback ritorna, lv_timer_handler()
+// prosegue il proprio giro di refresh interno e puo' riflushare il suo
+// framebuffer (ormai vecchio, la schermata sta per essere cancellata)
+// SOPRA quello che abbiamo appena disegnato noi (bug reale, osservato il
+// 25/09 - "torna al menu principale, si blocca"). showMain() quindi non
+// disegna piu' subito: si limita a mettere in pausa LVGL e a segnare
+// "serve un ridisegno", che avviene poi in Menu::update() - chiamata
+// SEMPRE da App::update() PRIMA di Display::update()/lv_timer_handler(),
+// mai annidata dentro.
+bool needsRedraw = false;
+
 Menu::ActionCallback actionCallback = nullptr;
 
 constexpr int16_t GRID_TOP = Display::DD_HEADER_H + 4;
@@ -227,6 +243,11 @@ void begin(ActionCallback callback) {
 
 
 void update() {
+    if (needsRedraw) {
+        needsRedraw = false;
+        drawScreen();
+    }
+
     InputEvent event = Input::getEvent();
 
     if (mainMenuVisible) {
@@ -306,7 +327,7 @@ void update() {
 void showMain() {
     mainMenuVisible = true;
     Display::setDirectDrawMode(true);
-    drawScreen();
+    needsRedraw = true;
 }
 
 

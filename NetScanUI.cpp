@@ -3,13 +3,18 @@
 #include "NetGuard.h"
 #include "Display.h"
 #include "Input.h"
+#include "TouchUI.h"
 #include "Menu.h"
 #include "NetToolsMenu.h"
 #include "ConnStatus.h"
 
 #include <Arduino.h>
-#include <lvgl.h>
 
+// Fase 3 della riscrittura senza LVGL (vedi project_lvgl_removal_rewrite
+// in memoria): NetScanUI convertita a disegno diretto - prima vera
+// lista scorrevole di contenuto dinamico (non un menu a griglia): stesso
+// scorrimento "a righe intere" gia' usato nel menu principale, applicato
+// qui ai dispositivi trovati.
 namespace {
 
     enum class Mode {
@@ -27,22 +32,26 @@ namespace {
     };
     ConfirmFocus confirmFocus = ConfirmFocus::Keep;
 
-    lv_obj_t* screen = nullptr;
-    lv_obj_t* resultsContent = nullptr; // il vero contenitore scorrevole in Results
-    lv_obj_t* statusLabel = nullptr; // usata sia in Scanning che come intestazione in Results
-    lv_obj_t* keepBtn = nullptr;
-    lv_obj_t* updateNowBtn = nullptr;
-
-    // Ultima percentuale mostrata durante la scansione: evita di
-    // richiamare lv_label_set_text() (rialloca nel pool LVGL) ad ogni
-    // ciclo di App::update() quando la percentuale non e' ancora
-    // cambiata - vedi la stessa correzione in NetGuardUI.cpp per il
-    // dettaglio del problema.
     int lastScanPercent = -1;
+    int topVisibleRow = 0;
+
+    constexpr int16_t LIST_TOP = Display::DD_HEADER_H + 56;
+    constexpr int16_t ROW_H = 24;
+    constexpr int VISIBLE_ROWS = (240 - LIST_TOP) / ROW_H;
+
+    constexpr int16_t BTN_X = 8;
+    constexpr int16_t BTN_W = 304;
+    constexpr int16_t BTN_H = 28;
+
+    int stopZone = -1;
+    int rescanZone = -1;
+    int keepZone = -1;
+    int updateZone = -1;
 
     void showScanningScreen();
     void showResultsScreen();
     void showConfirmRescanScreen();
+    void drawResultsScreen();
 
     void closeAndReturnToMenu() {
         mode = Mode::Closed;
@@ -73,132 +82,89 @@ namespace {
         }
     }
 
-    void rescanCb(lv_event_t* event) {
-        (void)event;
-        requestRescan();
-    }
-
-    void stopScanCb(lv_event_t* event) {
-        (void)event;
-        closeAndReturnToMenu();
-    }
-
     void keepList() {
         showResultsScreen();
     }
 
-    void keepListCb(lv_event_t* event) {
-        (void)event;
-        keepList();
+    void drawHeaderTitle(const char* title) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        gfx->print(title);
+
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(228, Display::DD_HEADER_H + 8);
+        gfx->print("[B] INDIETRO");
     }
 
-    void confirmUpdateCb(lv_event_t* event) {
-        (void)event;
-        startManualRescan();
+    void drawButton(int16_t y, const char* label, bool focused = true) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->drawRect(BTN_X, y, BTN_W, BTN_H, focused ? Display::DD_ACCENT : Display::DD_ACCENT_DIM);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(BTN_X + 12, y + BTN_H / 2 - 3);
+        gfx->print(label);
     }
 
-    void updateConfirmFocusHighlight() {
-        lv_obj_t* buttons[] = { keepBtn, updateNowBtn };
-        ConfirmFocus focuses[] = { ConfirmFocus::Keep, ConfirmFocus::UpdateNow };
-
-        for (int i = 0; i < 2; i++) {
-            if (buttons[i] == nullptr) {
-                continue;
-            }
-            bool selected = (confirmFocus == focuses[i]);
-            lv_obj_set_style_bg_color(
-                buttons[i],
-                selected ? Display::COLOR_ACCENT : lv_color_hex(0x0A1A2A),
-                LV_PART_MAIN
-            );
-        }
-    }
-
-    void buildConfirmRescanScreen() {
-        lv_obj_t* content = nullptr;
-        screen = Display::createScreen("NetScan", &content, keepList);
+    void drawConfirmRescanScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("NETSCAN");
 
         char summary[96];
         snprintf(
             summary, sizeof(summary),
-            "Hai gia' una whitelist salvata (%d dispositivi).\nMantenerla o aggiornarla con una nuova scansione?",
+            "Hai gia' una whitelist salvata (%d dispositivi). Mantenerla o aggiornarla con una nuova scansione?",
             NetScan::getDeviceCount()
         );
-        lv_obj_t* label = lv_label_create(content);
-        lv_label_set_text(label, summary);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(label, LV_PCT(100));
-        lv_obj_set_style_text_color(label, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
-        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
+        Display::drawWrappedText(8, Display::DD_HEADER_H + 26, 304, summary, Display::DD_TEXT);
 
-        keepBtn = lv_btn_create(content);
-        lv_obj_set_width(keepBtn, LV_PCT(100));
-        lv_obj_set_height(keepBtn, 34);
-        lv_obj_align(keepBtn, LV_ALIGN_BOTTOM_LEFT, 0, -40);
-        lv_obj_set_style_bg_opa(keepBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(keepBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(keepBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(keepBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(keepBtn, keepListCb, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t* keepLabel = lv_label_create(keepBtn);
-        lv_label_set_text(keepLabel, LV_SYMBOL_OK " Mantieni lista attuale");
-        lv_obj_center(keepLabel);
-        lv_obj_set_style_text_color(keepLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(keepLabel, &lv_font_montserrat_14, 0);
-
-        updateNowBtn = lv_btn_create(content);
-        lv_obj_set_width(updateNowBtn, LV_PCT(100));
-        lv_obj_set_height(updateNowBtn, 34);
-        lv_obj_align(updateNowBtn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        lv_obj_set_style_bg_opa(updateNowBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(updateNowBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(updateNowBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(updateNowBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(updateNowBtn, confirmUpdateCb, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t* updateNowLabel = lv_label_create(updateNowBtn);
-        lv_label_set_text(updateNowLabel, LV_SYMBOL_REFRESH " Aggiorna ora");
-        lv_obj_center(updateNowLabel);
-        lv_obj_set_style_text_color(updateNowLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(updateNowLabel, &lv_font_montserrat_14, 0);
-
-        updateConfirmFocusHighlight();
+        TouchUI::clearZones();
+        drawButton(150, "[ OK ] MANTIENI LISTA ATTUALE", confirmFocus == ConfirmFocus::Keep);
+        keepZone = TouchUI::addZone(BTN_X, 150, BTN_W, BTN_H);
+        drawButton(184, "[ ~ ] AGGIORNA ORA", confirmFocus == ConfirmFocus::UpdateNow);
+        updateZone = TouchUI::addZone(BTN_X, 184, BTN_W, BTN_H);
     }
 
     void showConfirmRescanScreen() {
         mode = Mode::ConfirmRescan;
         confirmFocus = ConfirmFocus::Keep;
-
-        if (screen != nullptr) {
-            lv_obj_del(screen);
-            screen = nullptr;
-        }
-
-        buildConfirmRescanScreen();
-        lv_scr_load(screen);
+        drawConfirmRescanScreen();
     }
 
     void handleConfirmRescanInput() {
+        int tapped = TouchUI::pollTap();
+        if (tapped == keepZone) {
+            keepList();
+            return;
+        }
+        if (tapped == updateZone) {
+            startManualRescan();
+            return;
+        }
+
         InputEvent event = Input::getEvent();
         switch (event) {
             case InputEvent::Up:
             case InputEvent::Down:
                 confirmFocus = (confirmFocus == ConfirmFocus::Keep) ? ConfirmFocus::UpdateNow : ConfirmFocus::Keep;
-                updateConfirmFocusHighlight();
+                drawConfirmRescanScreen();
                 break;
 
             case InputEvent::Select:
                 if (confirmFocus == ConfirmFocus::Keep) {
-                    keepListCb(nullptr);
+                    keepList();
                 } else {
-                    confirmUpdateCb(nullptr);
+                    startManualRescan();
                 }
                 break;
 
             case InputEvent::Back:
-                keepListCb(nullptr);
+                keepList();
                 break;
 
             default:
@@ -206,129 +172,78 @@ namespace {
         }
     }
 
-    void buildScanningScreen() {
-        lv_obj_t* content = nullptr;
-        screen = Display::createScreen("NetScan", &content, closeAndReturnToMenu);
+    void drawScanningScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("NETSCAN");
 
-        statusLabel = lv_label_create(content);
-        lv_obj_set_style_text_font(statusLabel, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(statusLabel, Display::COLOR_TEXT, 0);
-        lv_label_set_long_mode(statusLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(statusLabel, LV_PCT(100));
-        lv_obj_align(statusLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+        char text[48];
+        snprintf(text, sizeof(text), "Scansione della rete in corso... %d%%", NetScan::getProgressPercent());
+        Display::drawWrappedText(8, Display::DD_HEADER_H + 26, 304, text, Display::DD_TEXT);
 
-        // Bottone visibile per interrompere: il piccolo "Indietro" touch
-        // in alto a destra c'e' gia', ma durante una scansione lunga
-        // serve un modo piu' evidente (e raggiungibile anche col
-        // trackball, vedi Select in handleScanningUpdate()) per fermarla.
-        lv_obj_t* stopBtn = lv_btn_create(content);
-        lv_obj_set_width(stopBtn, LV_PCT(100));
-        lv_obj_set_height(stopBtn, 34);
-        lv_obj_align(stopBtn, LV_ALIGN_TOP_LEFT, 0, 40);
-        lv_obj_set_style_bg_color(stopBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(stopBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(stopBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(stopBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(stopBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(stopBtn, stopScanCb, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t* stopLabel = lv_label_create(stopBtn);
-        lv_label_set_text(stopLabel, LV_SYMBOL_STOP " Interrompi scansione");
-        lv_obj_center(stopLabel);
-        lv_obj_set_style_text_color(stopLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(stopLabel, &lv_font_montserrat_14, 0);
+        TouchUI::clearZones();
+        drawButton(200, "[ STOP ] INTERROMPI SCANSIONE");
+        stopZone = TouchUI::addZone(BTN_X, 200, BTN_W, BTN_H);
     }
 
     void showScanningScreen() {
         mode = Mode::Scanning;
-
-        if (screen != nullptr) {
-            lv_obj_del(screen);
-            screen = nullptr;
-        }
-
-        buildScanningScreen();
-        lv_label_set_text(statusLabel, "Scansione della rete in corso...");
         lastScanPercent = -1;
-        lv_scr_load(screen);
+        drawScanningScreen();
     }
 
-    void buildResultsScreen() {
-        lv_obj_t* content = nullptr;
-        screen = Display::createScreen("NetScan", &content, closeAndReturnToMenu);
-        resultsContent = content;
+    void drawResultsRow(int index) {
+        Arduino_GFX* gfx = Display::getGfx();
+        int16_t y = LIST_TOP + (index - topVisibleRow) * ROW_H;
 
-        lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scroll_dir(content, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
-        lv_obj_set_layout(content, LV_LAYOUT_FLEX);
-        lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(content, 4, LV_PART_MAIN);
+        gfx->fillRect(0, y, 320, ROW_H, Display::DD_BG);
+
+        NetScan::Device dev = NetScan::getDevice(index);
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextColor(Display::DD_TEXT);
+        gfx->setCursor(8, y + 1);
+        gfx->print(dev.ip);
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(8, y + 12);
+        gfx->print(dev.mac);
+
+        gfx->drawFastHLine(0, y + ROW_H - 1, 320, Display::DD_ACCENT_DIM);
+    }
+
+    void drawResultsScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("NETSCAN");
 
         int count = NetScan::getDeviceCount();
+        char summary[32];
+        snprintf(summary, sizeof(summary), "%d DISPOSITIVI TROVATI", count);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 24);
+        gfx->print(summary);
 
-        char summary[48];
-        snprintf(summary, sizeof(summary), "%d dispositivi trovati:", count);
-        lv_obj_t* summaryLabel = lv_label_create(content);
-        lv_label_set_text(summaryLabel, summary);
-        lv_obj_set_style_text_color(summaryLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(summaryLabel, &lv_font_montserrat_14, 0);
+        TouchUI::clearZones();
+        drawButton(Display::DD_HEADER_H + 34, "[ RESCAN ] SCANSIONA DI NUOVO");
+        rescanZone = TouchUI::addZone(BTN_X, Display::DD_HEADER_H + 34, BTN_W, BTN_H);
 
-        lv_obj_t* rescanBtn = lv_btn_create(content);
-        lv_obj_set_width(rescanBtn, LV_PCT(100));
-        lv_obj_set_height(rescanBtn, 34);
-        lv_obj_set_style_bg_color(rescanBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(rescanBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(rescanBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(rescanBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(rescanBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(rescanBtn, rescanCb, LV_EVENT_CLICKED, nullptr);
+        gfx->fillRect(0, LIST_TOP, 320, 240 - LIST_TOP, Display::DD_BG);
 
-        lv_obj_t* rescanLabel = lv_label_create(rescanBtn);
-        lv_label_set_text(rescanLabel, LV_SYMBOL_REFRESH " Scansiona di nuovo");
-        lv_obj_center(rescanLabel);
-        lv_obj_set_style_text_color(rescanLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(rescanLabel, &lv_font_montserrat_14, 0);
-
-        for (int i = 0; i < count; i++) {
-            NetScan::Device dev = NetScan::getDevice(i);
-
-            lv_obj_t* row = lv_obj_create(content);
-            if (row == nullptr) {
-                // Pool oggetti LVGL esaurito: meglio troncare la lista
-                // che proseguire scrivendo su puntatori nulli piu' sotto.
-                break;
-            }
-            lv_obj_remove_style_all(row);
-            lv_obj_set_width(row, LV_PCT(100));
-            lv_obj_set_height(row, LV_SIZE_CONTENT);
-            lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-            lv_obj_set_style_border_color(row, lv_color_hex(0x333333), LV_PART_MAIN);
-            lv_obj_set_style_radius(row, 4, LV_PART_MAIN);
-            lv_obj_set_style_pad_all(row, 6, LV_PART_MAIN);
-            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-            lv_obj_t* rowLabel = lv_label_create(row);
-            if (rowLabel == nullptr) {
-                break;
-            }
-            String text = dev.ip + "\n" + dev.mac;
-            lv_label_set_text(rowLabel, text.c_str());
-            lv_obj_set_style_text_color(rowLabel, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(rowLabel, &lv_font_montserrat_14, 0);
+        int lastVisible = topVisibleRow + VISIBLE_ROWS - 1;
+        if (lastVisible >= count) {
+            lastVisible = count - 1;
+        }
+        for (int i = topVisibleRow; i <= lastVisible; i++) {
+            drawResultsRow(i);
         }
     }
 
     void showResultsScreen() {
         mode = Mode::Results;
-
-        if (screen != nullptr) {
-            lv_obj_del(screen);
-            screen = nullptr;
-        }
-
-        buildResultsScreen();
-        lv_scr_load(screen);
+        topVisibleRow = 0;
+        drawResultsScreen();
     }
 
     void handleScanningUpdate() {
@@ -339,16 +254,29 @@ namespace {
         if (percent != lastScanPercent) {
             lastScanPercent = percent;
             char text[48];
-            snprintf(
-                text, sizeof(text),
-                "Scansione della rete in corso... %d%%",
-                percent
-            );
-            lv_label_set_text(statusLabel, text);
+            snprintf(text, sizeof(text), "Scansione della rete in corso... %d%%", percent);
+
+            // drawWrappedText() non cancella da sola l'area prima di
+            // scrivere (a differenza delle altre schermate, che lo fanno
+            // esplicitamente prima di chiamarla): senza questo, quando la
+            // percentuale cambia numero di cifre (es. "100%" -> "5%")
+            // restavano pezzi del testo precedente sovrapposti - con
+            // ~100 aggiornamenti durante una scansione lo schermo
+            // sembrava "rotto"/bloccato pur non essendolo (nessun evento
+            // nello storico crash lo conferma).
+            Arduino_GFX* gfx = Display::getGfx();
+            gfx->fillRect(0, Display::DD_HEADER_H + 24, 320, 22, Display::DD_BG);
+            Display::drawWrappedText(8, Display::DD_HEADER_H + 26, 304, text, Display::DD_TEXT);
         }
 
         if (!NetScan::isScanning()) {
             showResultsScreen();
+            return;
+        }
+
+        int tapped = TouchUI::pollTap();
+        if (tapped == stopZone) {
+            closeAndReturnToMenu();
             return;
         }
 
@@ -359,24 +287,27 @@ namespace {
     }
 
     void handleResultsInput() {
-        InputEvent event = Input::getEvent();
-        if (event == InputEvent::None) {
+        int tapped = TouchUI::pollTap();
+        if (tapped == rescanZone) {
+            requestRescan();
             return;
         }
 
-        // Nessuna voce da "selezionare" qui (solo informazioni in
-        // lettura): su/giu' scorrono la lista, Select riavvia la
-        // scansione, Indietro esce.
+        int count = NetScan::getDeviceCount();
+
+        InputEvent event = Input::getEvent();
         switch (event) {
             case InputEvent::Up:
-                if (resultsContent != nullptr) {
-                    lv_obj_scroll_by(resultsContent, 0, 40, LV_ANIM_ON);
+                if (topVisibleRow > 0) {
+                    topVisibleRow--;
+                    drawResultsScreen();
                 }
                 break;
 
             case InputEvent::Down:
-                if (resultsContent != nullptr) {
-                    lv_obj_scroll_by(resultsContent, 0, -40, LV_ANIM_ON);
+                if (topVisibleRow + VISIBLE_ROWS < count) {
+                    topVisibleRow++;
+                    drawResultsScreen();
                 }
                 break;
 
@@ -407,6 +338,8 @@ namespace NetScanUI {
             );
             return;
         }
+
+        Display::setDirectDrawMode(true);
 
         // Se c'e' gia' una lista da una scansione precedente (anche di
         // una sessione fa, vedi NetGuard che la aggiorna in background),

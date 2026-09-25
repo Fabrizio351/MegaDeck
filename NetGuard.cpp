@@ -80,6 +80,18 @@ namespace {
         lastAlertSummary = details;
         pendingAlert = true;
 
+        // Questo allarme puo' scattare da QUALUNQUE schermata, in
+        // qualunque momento (NetGuard::update() gira sempre, non solo
+        // con la sua UI aperta - vedi il commento in App.cpp) - anche
+        // mentre e' attiva una schermata disegnata a mano (NetScan,
+        // NetGuard stessa, GPS...), che ha messo LVGL in pausa. Senza
+        // questa riga l'avviso veniva costruito ma mai disegnato ne'
+        // reso interattivo (LVGL restava in pausa): lo schermo sembrava
+        // bloccato pur con tutto il resto (audio compreso) perfettamente
+        // funzionante - bug reale, osservato il 25/09 durante scansioni
+        // NetScan ripetute.
+        Display::setDirectDrawMode(false);
+
         // Chiudere questa schermata (Indietro/tap/Select) e' l'azione di
         // "acknowledge": da li' in poi l'icona in alto torna del colore
         // normale, vedi hasPendingAlert().

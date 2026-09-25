@@ -295,9 +295,10 @@ namespace App {
             // la finestra giusta subito dopo un reset (vedi note in
             // project_crash_diagnosis_workflow sulla ri-enumerazione USB).
             DEBUG_PRINTF(
-                "[BACKLIGHT] schermo=%d%% tastiera=%d%% screenlock_attivo=%d buffer_lvgl_ok=%d\n",
+                "[BACKLIGHT] schermo=%d%% tastiera=%d%% screenlock_attivo=%d buffer_lvgl_ok=%d disegno_diretto=%d\n",
                 Board::getBacklightPercent(), Board::getKeyboardBacklightPercent(),
-                ScreenLock::isLocked() ? 1 : 0, Display::areBuffersOk() ? 1 : 0
+                ScreenLock::isLocked() ? 1 : 0, Display::areBuffersOk() ? 1 : 0,
+                Display::isDirectDrawMode() ? 1 : 0
             );
         }
 

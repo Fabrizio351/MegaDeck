@@ -389,6 +389,11 @@ void setDirectDrawMode(bool active) {
 }
 
 
+bool isDirectDrawMode() {
+    return directDrawModeActive;
+}
+
+
 // Barra in alto condivisa (Fase 2): stessa idea/layout del test di Fase
 // 1 (barretta RAM, ora, sigle radio) ma con dati REALI invece che
 // placeholder fissi - stesse fonti gia' usate da updateHeader() (LVGL).

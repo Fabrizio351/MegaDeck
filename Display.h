@@ -23,6 +23,14 @@ namespace Display {
     // necessario al ritorno).
     void setDirectDrawMode(bool active);
 
+    // Diagnostica (25/09): NetScan segnalato "bloccato solo a schermo"
+    // dopo diverse scansioni ripetute, nessun crash/riavvio nello
+    // storico - probabile causa: qualcosa rimette in pausa il disegno
+    // diretto (o lo lascia disattivo) senza che nessuno lo riattivi.
+    // Esposto nel log periodico [BACKLIGHT] per vederlo subito al
+    // prossimo blocco invece di continuare a indovinare.
+    bool isDirectDrawMode();
+
     // Barra in alto condivisa per le schermate disegnate a mano - stessi
     // dati reali dell'header LVGL (ConnStatus, GPS, batteria) ma
     // disegnata direttamente. Da richiamare ad ogni apertura schermata e
