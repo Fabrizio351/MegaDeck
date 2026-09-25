@@ -9,6 +9,7 @@
 #include <esp_heap_caps.h>
 
 #include <Arduino_GFX_Library.h>
+#include "FreeSans9pt7b.h"
 
 // lv_refr_now() e' dichiarato in core/lv_refr.h, incluso transitivamente
 // da <lvgl.h> (vedi src/core/lv_refr.h), quindi e' gia' visibile qui
@@ -527,6 +528,100 @@ void begin() {
 
 bool areBuffersOk() {
     return buffersOk;
+}
+
+
+// Fase 1, passo 1 della riscrittura senza LVGL (2026-09-25): prova dal
+// vivo che disegnare testo/rettangoli DIRETTAMENTE con Arduino_GFX (senza
+// passare da nessun oggetto/widget LVGL) funziona bene su schermo vero -
+// font leggibile, colori giusti, nessun artefatto - prima di costruirci
+// sopra gestione touch e resto. Disegna una volta sola, poi il normale
+// avvio LVGL prosegue e ridisegna sopra: non tocca ne' rompe nulla del
+// funzionamento attuale, e' solo una prova visiva temporanea.
+void showDirectDrawTest() {
+    // CORRETTO (prima versione aveva colori a 24 bit scritti come se
+    // fossero gia' RGB565 a 16 bit - risultato: valori troncati/sbagliati,
+    // da qui "solo verde/nero oppure azzurro/nero"). gfx->color565()
+    // converte da R,G,B a 8 bit (formato normale, 0-255 ciascuno) al
+    // formato a 16 bit che il pannello si aspetta davvero.
+    const uint16_t BG = gfx->color565(0x00, 0x00, 0x00);          // nero pieno
+    const uint16_t ACCENT = gfx->color565(0x39, 0xFF, 0x14);      // verde matrix
+    const uint16_t ACCENT_DIM = gfx->color565(0x0A, 0x2E, 0x10);  // stesso verde, molto attenuato
+    const uint16_t TEXT = gfx->color565(0xD7, 0xF7, 0xDF);        // bianco-verdino tenue
+    const uint16_t TEXT_DIM = gfx->color565(0x7F, 0xAE, 0x86);    // grigio-verdino scuro
+
+    gfx->fillScreen(BG);
+    gfx->setTextWrap(false);
+
+    // --- Barra in alto: font classico 5x7 (compatto), non quello nuovo
+    // piu' grande - nello spazio stretto dell'header il font piu' grande
+    // non ci stava ("non si capisce nulla"). Il font piu' grande resta
+    // solo per le voci di menu, dove c'e' spazio.
+    constexpr int16_t HEADER_H = 18;
+    gfx->setFont(nullptr);
+    gfx->setTextSize(1);
+    gfx->drawFastHLine(0, HEADER_H, DISPLAY_WIDTH, ACCENT_DIM);
+
+    gfx->fillRect(4, 4, 4, 10, ACCENT);
+    gfx->setTextColor(TEXT_DIM);
+    gfx->setCursor(12, 6);
+    gfx->print("14:32");
+
+    gfx->setTextColor(ACCENT);
+    gfx->setCursor(220, 6);
+    gfx->print("WIFI");
+    gfx->setTextColor(TEXT_DIM);
+    gfx->setCursor(256, 6);
+    gfx->print("BLE");
+    gfx->setTextColor(ACCENT);
+    gfx->setCursor(284, 6);
+    gfx->print("LORA");
+
+    // --- Griglia menu: STESSO font e STESSA dimensione della barra in
+    // alto (5x7 classico, size 1) - a size 2 le scritte piu' lunghe
+    // ("Impostazioni") uscivano dal bordo della cella; il font non ha
+    // taglie intermedie fra le due gia' provate. Testo sempre verde; la
+    // voce selezionata si distingue con un rettangolino verticale verde
+    // a sinistra, non piu' con lo sfondo invertito.
+    gfx->setFont(nullptr);
+    gfx->setTextSize(1);
+
+    const char* labels[8] = {
+        "WIFI", "BLUETOOTH", "LORA CHAT", "GPS",
+        "NET TOOLS", "IMPOSTAZIONI", "VPN", "VOIP"
+    };
+
+    constexpr int16_t GRID_TOP = HEADER_H + 6;
+    constexpr int16_t GRID_LEFT = 6;
+    constexpr int16_t CELL_W = 154;
+    constexpr int16_t CELL_H = 46;
+    constexpr int16_t GAP = 4;
+
+    for (int i = 0; i < 8; i++) {
+        int col = i % 2;
+        int row = i / 2;
+        int16_t x = GRID_LEFT + col * (CELL_W + GAP);
+        int16_t y = GRID_TOP + row * (CELL_H + GAP);
+
+        bool selected = (i == 0);
+
+        gfx->drawRect(x, y, CELL_W, CELL_H, ACCENT_DIM);
+
+        if (selected) {
+            // Rettangolino verticale a sinistra, stessa idea della
+            // barretta RAM nell'header, non piu' sfondo pieno invertito.
+            gfx->fillRect(x + 4, y + 8, 4, CELL_H - 16, ACCENT);
+        }
+
+        gfx->setTextColor(ACCENT);
+        // Font classico: il cursore Y e' l'angolo in alto a sinistra
+        // (non la base come nel Free Sans) - altezza glifo 7px a size 1,
+        // quindi -3 (meta' altezza, arrotondato) per centrare in verticale.
+        gfx->setCursor(x + 16, y + CELL_H / 2 - 3);
+        gfx->print(labels[i]);
+    }
+
+    DEBUG_PRINTLN("[DISPLAY] prova disegno diretto (senza LVGL) completata");
 }
 
 

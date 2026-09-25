@@ -24,6 +24,12 @@ namespace Display {
     // dal log periodico invece.
     bool areBuffersOk();
 
+    // Fase 1, passo 1 della riscrittura senza LVGL: disegna una schermata
+    // di prova usando SOLO Arduino_GFX (nessun oggetto/widget LVGL), per
+    // verificare dal vivo leggibilita' del font e resa dei colori prima
+    // di costruire il resto sopra. Temporanea - vedi project_lvgl_removal_rewrite.
+    void showDirectDrawTest();
+
     // Schermata di boot
     void showBootScreen();
 

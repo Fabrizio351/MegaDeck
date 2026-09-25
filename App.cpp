@@ -144,6 +144,14 @@ namespace App {
         CrashLog::breadcrumb("Display::begin");
         Display::begin();
 
+        // TEMPORANEO - Fase 1, passo 1 della riscrittura senza LVGL (vedi
+        // project_lvgl_removal_rewrite in memoria): mostra per qualche
+        // secondo una schermata disegnata SOLO con Arduino_GFX, per
+        // verificare dal vivo il risultato prima di costruire il resto.
+        // Da togliere una volta validato il passo.
+        Display::showDirectDrawTest();
+        delay(4000);
+
         // Se l'ultimo riavvio e' stato un crash, mostra un avviso visivo
         // (teschio) per qualche secondo invece del vecchio riepilogo
         // testuale: i dettagli veri (motivo, breadcrumb, coredump con
