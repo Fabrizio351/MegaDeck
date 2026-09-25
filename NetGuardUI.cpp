@@ -3,37 +3,43 @@
 #include "NetScan.h"
 #include "Display.h"
 #include "Input.h"
-#include "Menu.h"
+#include "TouchUI.h"
 #include "NetToolsMenu.h"
 #include "ConnStatus.h"
 
 #include <Arduino.h>
-#include <lvgl.h>
 
+// Fase 2 della riscrittura senza LVGL (vedi project_lvgl_removal_rewrite
+// in memoria): prima schermata reale convertita a disegno diretto - era
+// quella che restava aperta piu' a lungo (pensata come "dashboard") e
+// quindi la fonte principale dei riavvii per pool LVGL esaurito (vedi
+// project_lvgl_pool_exhaustion_fix). Nessun oggetto/widget LVGL qui
+// dentro: solo Arduino_GFX via Display::getGfx(), tap via TouchUI,
+// LVGL messo in pausa con Display::setDirectDrawMode() mentre questa
+// schermata e' attiva (il resto dell'app, non ancora convertito, resta
+// su LVGL).
 namespace {
 
     bool active = false;
 
-    lv_obj_t* screen = nullptr;
-    lv_obj_t* statusLabel = nullptr;
-    lv_obj_t* toggleBtn = nullptr;
-    lv_obj_t* toggleLabel = nullptr;
+    // true mentre e' visibile il messaggio LVGL "serve prima una
+    // whitelist" (Display::showMessage, non ancora convertito): in
+    // quella finestra update() non deve toccare ne' lo schermo ne' i tap,
+    // altrimenti il prossimo ridisegno di NetGuard cancellerebbe il
+    // messaggio ancora in vista.
+    bool showingSubMessage = false;
 
-    // Ultimo testo assegnato a statusLabel: refreshStatusLabel() viene
-    // chiamata ad OGNI ciclo di App::update() mentre la schermata resta
-    // aperta (lo stato puo' cambiare da solo, es. un allarme), ma
-    // lv_label_set_text() rialloca sempre il buffer di testo nel pool
-    // LVGL anche quando il contenuto e' identico - con questa schermata
-    // lasciata aperta a lungo (e' pensata per restare visibile come
-    // "dashboard"), farlo incondizionatamente martellava il pool da 64KB
-    // decine di volte al secondo per nulla, contribuendo direttamente
-    // agli "pool memoria esaurito" osservati durante l'uso reale (vedi
-    // project_lvgl_pool_exhaustion_fix in memoria). Confrontando col
-    // testo precedente si aggiorna solo quando cambia davvero.
     String lastStatusText;
+
+    constexpr int16_t TOGGLE_X = 8;
+    constexpr int16_t TOGGLE_Y = 200;
+    constexpr int16_t TOGGLE_W = 304;
+    constexpr int16_t TOGGLE_H = 30;
+    int toggleZone = -1;
 
     void closeNetGuard() {
         active = false;
+        Display::setDirectDrawMode(false);
         NetToolsMenu::showMain();
     }
 
@@ -64,30 +70,86 @@ namespace {
         return text;
     }
 
-    void refreshStatusLabel() {
-        if (statusLabel != nullptr) {
-            String newText = buildStatusText();
-            if (newText != lastStatusText) {
-                lastStatusText = newText;
-                lv_label_set_text(statusLabel, newText.c_str());
+    // Stampa testo multi-riga rispettando i "\n" gia' presenti (buildStatusText()
+    // li usa per separare i paragrafi) E spezzando le righe piu' larghe
+    // della zona disponibile - il font classico e' a larghezza fissa
+    // (6px/carattere a size 1), quindi basta un calcolo diretto, niente
+    // getTextBounds().
+    void drawWrappedText(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setTextColor(color);
+
+        constexpr int16_t CHAR_W = 6;
+        constexpr int16_t LINE_H = 11;
+
+        int maxChars = w / CHAR_W;
+        if (maxChars < 1) {
+            maxChars = 1;
+        }
+
+        int16_t cursorY = y;
+        int pos = 0;
+        int len = text.length();
+
+        while (pos <= len) {
+            int newlinePos = text.indexOf('\n', pos);
+            int lineEnd = (newlinePos == -1) ? len : newlinePos;
+            int lineLen = lineEnd - pos;
+
+            if (lineLen == 0) {
+                cursorY += LINE_H;
+            } else {
+                int segStart = pos;
+                while (segStart < lineEnd) {
+                    int segLen = min(maxChars, lineEnd - segStart);
+                    gfx->setCursor(x, cursorY);
+                    gfx->print(text.substring(segStart, segStart + segLen));
+                    cursorY += LINE_H;
+                    segStart += segLen;
+                }
             }
+
+            if (newlinePos == -1) {
+                break;
+            }
+            pos = newlinePos + 1;
         }
     }
 
-    void refreshToggleLabel() {
-        if (toggleLabel != nullptr) {
-            lv_label_set_text(
-                toggleLabel,
-                NetGuard::isEnabled()
-                    ? LV_SYMBOL_STOP " Disattiva sorveglianza"
-                    : LV_SYMBOL_OK " Attiva sorveglianza"
-            );
-        }
+    void drawScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        gfx->print("NETGUARD");
+
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(228, Display::DD_HEADER_H + 8);
+        gfx->print("[B] INDIETRO");
+
+        String statusText = buildStatusText();
+        lastStatusText = statusText;
+        drawWrappedText(8, Display::DD_HEADER_H + 26, 304, statusText, Display::DD_TEXT);
+
+        gfx->drawRect(TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H, Display::DD_ACCENT);
+        gfx->setTextColor(Display::DD_ACCENT);
+        const char* btnLabel = NetGuard::isEnabled()
+            ? "DISATTIVA SORVEGLIANZA"
+            : "ATTIVA SORVEGLIANZA";
+        gfx->setCursor(TOGGLE_X + 12, TOGGLE_Y + TOGGLE_H / 2 - 3);
+        gfx->print(btnLabel);
+
+        TouchUI::clearZones();
+        toggleZone = TouchUI::addZone(TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H);
     }
 
-    void toggleCb(lv_event_t* event) {
-        (void)event;
-
+    void doToggle() {
         bool wantEnabled = !NetGuard::isEnabled();
         bool ok = NetGuard::setEnabled(wantEnabled);
 
@@ -95,6 +157,10 @@ namespace {
             // Nessuna whitelist ancora: NetGuard non puo' scansionare da
             // solo per crearla (solo NetScan lo fa), quindi si spiega
             // il motivo invece di attivare silenziosamente nulla.
+            // Display::showMessage() e' ancora LVGL - LVGL va risvegliato
+            // prima, e update() deve restare fermo finche' non si torna.
+            showingSubMessage = true;
+            Display::setDirectDrawMode(false);
             Display::showMessage(
                 "NetGuard",
                 "Serve prima una whitelist: apri NetScan e fai una scansione, poi torna qui ad attivare la sorveglianza.",
@@ -103,44 +169,7 @@ namespace {
             return;
         }
 
-        refreshToggleLabel();
-        refreshStatusLabel();
-    }
-
-    void buildScreen() {
-        lv_obj_t* content = nullptr;
-        screen = Display::createScreen("NetGuard", &content, closeNetGuard);
-
-        statusLabel = lv_label_create(content);
-        lv_obj_set_style_text_font(statusLabel, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(statusLabel, Display::COLOR_TEXT, 0);
-        lv_label_set_long_mode(statusLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(statusLabel, LV_PCT(100));
-        lv_obj_align(statusLabel, LV_ALIGN_TOP_LEFT, 0, 0);
-
-        toggleBtn = lv_btn_create(content);
-        lv_obj_set_width(toggleBtn, LV_PCT(100));
-        lv_obj_set_height(toggleBtn, 34);
-        lv_obj_align(toggleBtn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        lv_obj_set_style_bg_color(toggleBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(toggleBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(toggleBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(toggleBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(toggleBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(toggleBtn, toggleCb, LV_EVENT_CLICKED, nullptr);
-
-        toggleLabel = lv_label_create(toggleBtn);
-        lv_obj_center(toggleLabel);
-        lv_obj_set_style_text_color(toggleLabel, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_text_font(toggleLabel, &lv_font_montserrat_14, 0);
-
-        // statusLabel e' appena stato ricreato: forza il primo refresh
-        // (altrimenti, se il testo coincidesse per caso con l'ultimo
-        // assegnato alla schermata precedente, refreshStatusLabel()
-        // salterebbe l'aggiornamento e la nuova label resterebbe vuota).
-        lastStatusText = "";
-        refreshToggleLabel();
-        refreshStatusLabel();
+        drawScreen();
     }
 
 } // namespace
@@ -158,14 +187,9 @@ namespace NetGuardUI {
         }
 
         active = true;
-
-        if (screen != nullptr) {
-            lv_obj_del(screen);
-            screen = nullptr;
-        }
-
-        buildScreen();
-        lv_scr_load(screen);
+        showingSubMessage = false;
+        Display::setDirectDrawMode(true);
+        drawScreen();
     }
 
     bool isActive() {
@@ -173,18 +197,30 @@ namespace NetGuardUI {
     }
 
     void update() {
-        if (!active) {
+        if (!active || showingSubMessage) {
             return;
         }
 
         // Lo stato (whitelist, ultimo allarme) puo' cambiare da solo
-        // mentre la schermata resta aperta: aggiornato ad ogni ciclo.
-        refreshStatusLabel();
+        // mentre la schermata resta aperta - ridisegna solo se e'
+        // davvero cambiato (stesso principio della correzione di questa
+        // settimana su lv_label_set_text(), qui vale per l'intero
+        // ridisegno dello schermo fisico).
+        String currentText = buildStatusText();
+        if (currentText != lastStatusText) {
+            drawScreen();
+        }
+
+        int tapped = TouchUI::pollTap();
+        if (tapped == toggleZone) {
+            doToggle();
+            return;
+        }
 
         InputEvent event = Input::getEvent();
         switch (event) {
             case InputEvent::Select:
-                toggleCb(nullptr);
+                doToggle();
                 break;
 
             case InputEvent::Back:
