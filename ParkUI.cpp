@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "Display.h"
 #include "Input.h"
+#include "TouchUI.h"
 #include "GpsUI.h"
 #include "GPS.h"
 #include "ParkLookup.h"
@@ -9,18 +10,27 @@
 #include "ConnStatus.h"
 
 #include <Arduino.h>
-#include <lvgl.h>
 #include <WiFi.h>
 
+// Fase 2 della riscrittura senza LVGL (vedi project_lvgl_removal_rewrite
+// in memoria): schermata Park convertita a disegno diretto, stesso
+// schema di WeatherUI.cpp (chrome fisso disegnato una volta, area
+// risultato ripulita e riscritta ad ogni fetchAndShow()).
 namespace {
 
     bool active = false;
 
-    lv_obj_t* screen = nullptr;
-    lv_obj_t* resultLabel = nullptr;
+    constexpr int16_t RESULT_Y = Display::DD_HEADER_H + 30;
+
+    constexpr int16_t REFRESH_X = 85;
+    constexpr int16_t REFRESH_Y = 200;
+    constexpr int16_t REFRESH_W = 150;
+    constexpr int16_t REFRESH_H = 30;
+    int refreshZone = -1;
 
     void closePark() {
         active = false;
+        Display::setDirectDrawMode(false);
         GpsUI::showMain();
     }
 
@@ -49,26 +59,53 @@ namespace {
         }
     }
 
+    void drawChrome() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        gfx->print("PARK");
+
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(228, Display::DD_HEADER_H + 8);
+        gfx->print("[B] INDIETRO");
+
+        gfx->drawRect(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H, Display::DD_ACCENT);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(REFRESH_X + 20, REFRESH_Y + REFRESH_H / 2 - 3);
+        gfx->print("AGGIORNA");
+
+        TouchUI::clearZones();
+        refreshZone = TouchUI::addZone(REFRESH_X, REFRESH_Y, REFRESH_W, REFRESH_H);
+    }
+
+    void showText(const String& text) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillRect(0, RESULT_Y, 320, REFRESH_Y - RESULT_Y, Display::DD_BG);
+        Display::drawWrappedText(8, RESULT_Y, 304, text, Display::DD_ACCENT);
+    }
+
     void fetchAndShow() {
-        lv_label_set_text(resultLabel, "Ricerca del parco/area pic-nic piu' vicina...");
-        Display::update();
+        showText("Ricerca del parco/area pic-nic piu' vicina...");
 
         if (!ConnStatus::isWifiConnected()) {
-            // Diagnostica temporanea per capire perche' risulta "non
-            // connesso" anche quando l'utente vede il WiFi funzionante
-            // altrove: stato WiFi esatto in questo preciso istante,
-            // memoria libera in questo preciso istante.
             DEBUG_PRINTF(
                 "[PARK] WiFi non connesso qui: wifi_stato=%d heap_libero=%u\n",
                 static_cast<int>(WiFi.status()), ESP.getFreeHeap()
             );
-            lv_label_set_text(resultLabel, "Serve una rete WiFi connessa.");
+            showText("Serve una rete WiFi connessa.");
             return;
         }
 
         bool hasPosition = (GPS::getLatitude() != 0.0 || GPS::getLongitude() != 0.0);
         if (!hasPosition) {
-            lv_label_set_text(resultLabel, "Serve prima un fix GPS valido.");
+            showText("Serve prima un fix GPS valido.");
             return;
         }
 
@@ -77,8 +114,7 @@ namespace {
         );
 
         if (!result.valid) {
-            lv_label_set_text(
-                resultLabel,
+            showText(
                 "Nessun parco/area pic-nic mappato entro 5 km.\n"
                 "(dipende dai dati OpenStreetMap disponibili in questa zona)"
             );
@@ -94,8 +130,7 @@ namespace {
         // lo schermo resterebbe fermo sul messaggio "in corso" ancora
         // per qualche secondo senza nessun avviso.
         String withSearchNote = String(text) + "\nCerco il nome della via...";
-        lv_label_set_text(resultLabel, withSearchNote.c_str());
-        Display::update();
+        showText(withSearchNote);
 
         GeoLookup::Result geo = GeoLookup::reverseGeocode(result.lat, result.lon);
 
@@ -108,41 +143,7 @@ namespace {
             finalText += "\n(nome via non disponibile in questa zona)";
         }
 
-        lv_label_set_text(resultLabel, finalText.c_str());
-    }
-
-    void refreshCb(lv_event_t* event) {
-        (void)event;
-        fetchAndShow();
-    }
-
-    void buildScreen() {
-        lv_obj_t* content = nullptr;
-        screen = Display::createScreen("Park", &content, closePark);
-
-        resultLabel = lv_label_create(content);
-        lv_obj_set_style_text_color(resultLabel, Display::COLOR_ACCENT, 0);
-        lv_obj_set_style_text_font(resultLabel, &lv_font_montserrat_14, 0);
-        lv_label_set_long_mode(resultLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(resultLabel, LV_PCT(100));
-        lv_obj_set_style_text_align(resultLabel, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(resultLabel, LV_ALIGN_TOP_MID, 0, 20);
-
-        lv_obj_t* refreshBtn = lv_btn_create(content);
-        lv_obj_set_size(refreshBtn, 150, 34);
-        lv_obj_align(refreshBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
-        lv_obj_set_style_bg_color(refreshBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(refreshBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(refreshBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(refreshBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(refreshBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(refreshBtn, refreshCb, LV_EVENT_CLICKED, nullptr);
-
-        lv_obj_t* refreshLabel = lv_label_create(refreshBtn);
-        lv_label_set_text(refreshLabel, LV_SYMBOL_REFRESH " Aggiorna");
-        lv_obj_center(refreshLabel);
-        lv_obj_set_style_text_color(refreshLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(refreshLabel, &lv_font_montserrat_14, 0);
+        showText(finalText);
     }
 
 } // namespace
@@ -152,15 +153,8 @@ namespace ParkUI {
 
     void open() {
         active = true;
-
-        if (screen != nullptr) {
-            lv_obj_del(screen);
-            screen = nullptr;
-        }
-
-        buildScreen();
-        lv_scr_load(screen);
-
+        Display::setDirectDrawMode(true);
+        drawChrome();
         fetchAndShow();
     }
 
@@ -170,6 +164,12 @@ namespace ParkUI {
 
     void update() {
         if (!active) {
+            return;
+        }
+
+        int tapped = TouchUI::pollTap();
+        if (tapped == refreshZone) {
+            fetchAndShow();
             return;
         }
 

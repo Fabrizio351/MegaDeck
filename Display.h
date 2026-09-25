@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <Arduino.h>
 #include <lvgl.h>
 #include <Arduino_GFX_Library.h>
 
@@ -41,6 +42,13 @@ namespace Display {
     // Altezza della barra in alto disegnata a mano, in px: le schermate
     // la usano per sapere dove inizia il loro contenuto.
     constexpr int16_t DD_HEADER_H = 18;
+
+    // Stampa testo multi-riga rispettando i "\n" gia' presenti nel testo
+    // E spezzando le righe piu' larghe di w - il font classico e' a
+    // larghezza fissa (6px/carattere a size 1), quindi basta un calcolo
+    // diretto, niente getTextBounds(). Condivisa da tutte le schermate
+    // disegnate a mano che mostrano testo libero (stato, risultati...).
+    void drawWrappedText(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color);
 
     // Palette condivisa (Menu.cpp la riusa per stilizzare i bottoni)
     extern const lv_color_t COLOR_BG;       // nero pieno

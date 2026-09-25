@@ -70,52 +70,6 @@ namespace {
         return text;
     }
 
-    // Stampa testo multi-riga rispettando i "\n" gia' presenti (buildStatusText()
-    // li usa per separare i paragrafi) E spezzando le righe piu' larghe
-    // della zona disponibile - il font classico e' a larghezza fissa
-    // (6px/carattere a size 1), quindi basta un calcolo diretto, niente
-    // getTextBounds().
-    void drawWrappedText(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color) {
-        Arduino_GFX* gfx = Display::getGfx();
-        gfx->setTextColor(color);
-
-        constexpr int16_t CHAR_W = 6;
-        constexpr int16_t LINE_H = 11;
-
-        int maxChars = w / CHAR_W;
-        if (maxChars < 1) {
-            maxChars = 1;
-        }
-
-        int16_t cursorY = y;
-        int pos = 0;
-        int len = text.length();
-
-        while (pos <= len) {
-            int newlinePos = text.indexOf('\n', pos);
-            int lineEnd = (newlinePos == -1) ? len : newlinePos;
-            int lineLen = lineEnd - pos;
-
-            if (lineLen == 0) {
-                cursorY += LINE_H;
-            } else {
-                int segStart = pos;
-                while (segStart < lineEnd) {
-                    int segLen = min(maxChars, lineEnd - segStart);
-                    gfx->setCursor(x, cursorY);
-                    gfx->print(text.substring(segStart, segStart + segLen));
-                    cursorY += LINE_H;
-                    segStart += segLen;
-                }
-            }
-
-            if (newlinePos == -1) {
-                break;
-            }
-            pos = newlinePos + 1;
-        }
-    }
-
     void drawScreen() {
         Arduino_GFX* gfx = Display::getGfx();
         gfx->fillScreen(Display::DD_BG);
@@ -135,7 +89,7 @@ namespace {
 
         String statusText = buildStatusText();
         lastStatusText = statusText;
-        drawWrappedText(8, Display::DD_HEADER_H + 26, 304, statusText, Display::DD_TEXT);
+        Display::drawWrappedText(8, Display::DD_HEADER_H + 26, 304, statusText, Display::DD_TEXT);
 
         gfx->drawRect(TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H, Display::DD_ACCENT);
         gfx->setTextColor(Display::DD_ACCENT);

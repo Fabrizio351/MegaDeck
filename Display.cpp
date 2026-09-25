@@ -436,6 +436,50 @@ void drawHeaderBar() {
 }
 
 
+void drawWrappedText(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color) {
+    gfx->setFont(nullptr);
+    gfx->setTextSize(1);
+    gfx->setTextWrap(false);
+    gfx->setTextColor(color);
+
+    constexpr int16_t CHAR_W = 6;
+    constexpr int16_t LINE_H = 11;
+
+    int maxChars = w / CHAR_W;
+    if (maxChars < 1) {
+        maxChars = 1;
+    }
+
+    int16_t cursorY = y;
+    int pos = 0;
+    int len = text.length();
+
+    while (pos <= len) {
+        int newlinePos = text.indexOf('\n', pos);
+        int lineEnd = (newlinePos == -1) ? len : newlinePos;
+        int lineLen = lineEnd - pos;
+
+        if (lineLen == 0) {
+            cursorY += LINE_H;
+        } else {
+            int segStart = pos;
+            while (segStart < lineEnd) {
+                int segLen = min(maxChars, lineEnd - segStart);
+                gfx->setCursor(x, cursorY);
+                gfx->print(text.substring(segStart, segStart + segLen));
+                cursorY += LINE_H;
+                segStart += segLen;
+            }
+        }
+
+        if (newlinePos == -1) {
+            break;
+        }
+        pos = newlinePos + 1;
+    }
+}
+
+
 void begin() {
     DEBUG_PRINTLN("[DISPLAY] avvio...");
 
