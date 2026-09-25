@@ -121,8 +121,9 @@ namespace {
         }
 
         if (satText != lastSatText) {
-            gfx->fillRect(0, Display::DD_HEADER_H + 40, 320, 12, Display::DD_BG);
-            gfx->setTextSize(1);
+            gfx->fillRect(0, Display::DD_HEADER_H + 40, 320, 24, Display::DD_BG);
+            gfx->setFont(nullptr);
+            gfx->setTextSize(2);
             gfx->setTextColor(Display::DD_TEXT);
             gfx->setCursor(8, Display::DD_HEADER_H + 42);
             gfx->print(satText);
@@ -130,11 +131,23 @@ namespace {
         }
     }
 
+    // Nazione/dettagli a size 2 (richiesto 26/09, come i satelliti sopra):
+    // dettagli piazzato dinamicamente subito sotto nazione in base
+    // all'altezza che nazione occupa davvero (puo' andare a capo su piu'
+    // righe), invece di due posizioni fisse - altrimenti col testo piu'
+    // grande un nome lungo avrebbe rischiato di sovrapporsi a dettagli.
     void drawGeoResult(const String& country, const String& details) {
         Arduino_GFX* gfx = Display::getGfx();
-        gfx->fillRect(0, Display::DD_HEADER_H + 56, 320, BTN_Y - (Display::DD_HEADER_H + 56), Display::DD_BG);
-        Display::drawWrappedText(8, Display::DD_HEADER_H + 58, 304, country, Display::DD_TEXT);
-        Display::drawWrappedText(8, Display::DD_HEADER_H + 70, 304, details, Display::DD_TEXT);
+        constexpr int16_t GEO_TOP = Display::DD_HEADER_H + 68;
+        constexpr int16_t TEXT_W = 304;
+        constexpr uint8_t GEO_TEXT_SIZE = 2;
+
+        gfx->fillRect(0, GEO_TOP, 320, BTN_Y - GEO_TOP, Display::DD_BG);
+
+        Display::drawWrappedText(8, GEO_TOP, TEXT_W, country, Display::DD_TEXT, GEO_TEXT_SIZE);
+        int16_t countryH = Display::wrappedTextHeight(country, TEXT_W, GEO_TEXT_SIZE);
+        Display::drawWrappedText(8, GEO_TOP + countryH + 4, TEXT_W, details, Display::DD_TEXT, GEO_TEXT_SIZE);
+
         lastCountryText = country;
         lastDetailsText = details;
     }

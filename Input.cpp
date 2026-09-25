@@ -6,7 +6,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#include <lvgl.h>
 
 // Driver touch: SensorLib (lewisxhe), non piu' TouchLib.
 #include "TouchDrvGT911.hpp"
@@ -86,9 +85,6 @@ namespace {
 
     constexpr uint32_t TOUCH_TASK_TIMEOUT_MS = 300;
     constexpr uint32_t TOUCH_TASK_POLL_MS = 15;
-
-    // --- LVGL indev (pointer) ---
-    lv_indev_t* touchIndev = nullptr;
 
     void IRAM_ATTR trackballG01() { cntUp++; }
     void IRAM_ATTR trackballG02() { cntRight++; }
@@ -305,10 +301,14 @@ namespace {
         }
     }
 
-    // Legge lo stato touch "grezzo" gia' debounced e lo passa a LVGL.
-    // Il debounce a letture stabili evita che il rumore I2C (bus condiviso
-    // con la tastiera) generi click fantasma sui bottoni del menu.
-    void lvglTouchRead(lv_indev_t*, lv_indev_data_t* data) {
+    // Legge lo stato touch "grezzo" gia' debounced e aggiorna
+    // touchX/touchY/touchConfirmed. Il debounce a letture stabili evita
+    // che il rumore I2C (bus condiviso con la tastiera) generi tap
+    // fantasma sulle zone toccabili (vedi TouchUI). Prima passava per un
+    // lv_indev_t LVGL (rimosso il 26/09, vedi
+    // project_lvgl_removal_rewrite in memoria) - stessa identica logica,
+    // ora scrive direttamente sullo stato letto da TouchUI/isTouched().
+    void updateTouchState() {
         bool touched;
         int16_t rawX, rawY;
 
@@ -328,21 +328,16 @@ namespace {
             // Buco di lettura momentaneo: manteniamo il press attivo
             // finche' non scade la finestra di tolleranza, altrimenti un
             // singolo ciclo "vuoto" durante un tocco reale genererebbe un
-            // rilascio (e quindi nessun LV_EVENT_CLICKED) a meta' tap.
+            // rilascio a meta' tap.
         } else {
             touchConfirmed = false;
         }
-
-        data->point.x = touchX;
-        data->point.y = touchY;
 
         static bool lastReportedState = false;
         if (touchConfirmed != lastReportedState) {
             DEBUG_PRINTF("[INPUT] touch confermato=%d a (%d,%d)\n", touchConfirmed, touchX, touchY);
             lastReportedState = touchConfirmed;
         }
-
-        data->state = touchConfirmed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     }
 }
 
@@ -400,19 +395,6 @@ namespace Input {
                 DEBUG_PRINTLN(touchAddr, HEX);
 
                 startTouchTask();
-
-                // Registrazione indev LVGL: da qui in poi i tap sui bottoni
-                // del menu arrivano come LV_EVENT_CLICKED sui widget.
-                touchIndev = lv_indev_create();
-                lv_indev_set_type(touchIndev, LV_INDEV_TYPE_POINTER);
-                lv_indev_set_read_cb(touchIndev, lvglTouchRead);
-
-                // Soglia di default 10px: il minimo tremolio naturale del
-                // dito durante un tap (piu' il rumore del sensore) puo'
-                // bastare a farla scattare, facendo interpretare il tap
-                // come inizio di uno scroll sulla griglia (ora scrollabile)
-                // e annullando il click prima che si completi. Alziamola.
-                lv_indev_set_scroll_limit(touchIndev, 30);
             } else {
                 DEBUG_PRINTLN("[INPUT] touch GT911 rilevato su I2C ma begin() fallita");
             }
@@ -425,15 +407,8 @@ namespace Input {
     }
 
     void update() {
-        // Forza la lettura dell'indev touch ad ogni ciclo, invece di
-        // fidarsi del timer periodico creato internamente da
-        // lv_indev_create(): in questo progetto quel timer non scatta mai
-        // (la read_cb non veniva mai chiamata, pur con l'indev
-        // correttamente registrato in LVGL) - stesso tipo di problema gia'
-        // risolto per il refresh del display con lv_refr_now() in
-        // Display::update().
-        if (touchIndev != nullptr && !touchSuppressed) {
-            lv_indev_read(touchIndev);
+        if (touchAvailable && !touchSuppressed) {
+            updateTouchState();
         }
 
         currentEvent = InputEvent::None;
@@ -455,8 +430,9 @@ namespace Input {
             // tasto reali, decine al secondo, molto piu' veloci di
             // qualunque essere umano. Ogni evento di navigazione cosi'
             // generato apre/chiude schermate a raffica, saturando in
-            // pochi secondi il pool LVGL da 64KB (vedi lv_conf.h) - causa
-            // reale dietro sia i crash "durante il redraw dei menu" sia
+            // pochi secondi il pool LVGL da 64KB (allora ancora in uso,
+            // rimosso il 26/09) - causa reale dietro sia i crash "durante
+            // il redraw dei menu" sia
             // uno schermo nero che si ripresenta identico ad ogni riavvio
             // finche' resta collegato un cavo USB. Accettiamo solo
             // caratteri plausibili da una vera digitazione (stampabili,

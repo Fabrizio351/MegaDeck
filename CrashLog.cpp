@@ -313,18 +313,3 @@ namespace CrashLog {
         writeHistoryEntry(String("Intercettato: ") + reason, currentBreadcrumbLog(), "");
     }
 }
-
-// Wrapper a collegamento C: richiamata dal macro LV_ASSERT_HANDLER (vedi
-// LvAssertHandler.h), che LVGL espande dentro file .c puri - non puo'
-// quindi chiamare direttamente funzioni C++ con namespace. Usata al
-// momento SOLO per LV_ASSERT_MALLOC (vedi lv_conf.h): prima di questo
-// fix, una malloc() fallita nel pool interno di LVGL (fisso, 64KB)
-// veniva ignorata silenziosamente e il codice scriveva comunque nel
-// puntatore NULL restituito, con un crash indiagnosticabile e casuale
-// nell'indirizzo esatto (dipende dal campo struct scritto). Con questo
-// handler diventa invece un riavvio pulito e tracciato, con la stessa
-// cronologia crash gia' in uso per i panic veri.
-extern "C" void crashlog_record_lvgl_oom_and_restart() {
-    CrashLog::recordControlledFault("LVGL: pool memoria esaurito (malloc fallita)");
-    esp_restart();
-}

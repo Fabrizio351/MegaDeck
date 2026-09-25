@@ -4,10 +4,18 @@
 #include "Menu.h"
 #include "LoRaRadio.h"
 #include "Sound.h"
+#include "TouchUI.h"
+#include "TextInputUI.h"
 
 #include <Arduino.h>
-#include <lvgl.h>
 
+// Rimozione finale di LVGL dal progetto (26/09, vedi
+// project_lvgl_removal_rewrite in memoria): ultima schermata reale
+// convertita a disegno diretto. Prima vera lista a "fumetti" di altezza
+// variabile (non righe fisse come Menu/NetScanUI): lo scorrimento resta
+// comunque a messaggi interi (mai un fumetto tagliato a meta'), stesso
+// principio del "niente clipping parziale" gia' scelto per le liste a
+// riga fissa.
 namespace {
 
     constexpr int MAX_MESSAGES = 30;
@@ -33,19 +41,42 @@ namespace {
     };
     Mode mode = Mode::Closed;
 
-    lv_obj_t* chatScreen = nullptr;
-    lv_obj_t* listContent = nullptr;
-    lv_obj_t* statusLabel = nullptr;
-
-    lv_obj_t* composeScreen = nullptr;
-    lv_obj_t* composeTextarea = nullptr;
-    String composeBuffer;
-
     // Vedi LoRaChatUI::hasUnreadMessages(): true da quando arriva un
     // messaggio a chat chiusa fino alla riapertura della chat.
     bool hasUnread = false;
 
+    int topVisibleMsgIndex = 0;
+    // true quando la vista e' "agganciata" all'ultimo messaggio: un nuovo
+    // arrivo la segue automaticamente. Diventa false appena l'utente
+    // scorre indietro a leggere la cronologia, per non "strapparlo" via
+    // da li' con un nuovo messaggio in arrivo.
+    bool followingTail = true;
+    int dragAccumY = 0;
+    String lastStatusText;
+
+    String composeBuffer;
+
+    constexpr int16_t BTN_X = 8;
+    constexpr int16_t BTN_W = 304;
+    constexpr int16_t BTN_H = 28;
+    constexpr int16_t BOX_PAD = 6;
+    constexpr int16_t BOX_GAP = 4;
+    constexpr int16_t TEXT_W = BTN_W - (BOX_PAD * 2) - 2;
+
+    constexpr int16_t STATUS_Y = Display::DD_HEADER_H + 20;
+    constexpr int16_t LIST_TOP = Display::DD_HEADER_H + 34;
+    constexpr int16_t COMPOSE_BTN_Y = 206;
+    constexpr int16_t LIST_BOTTOM = COMPOSE_BTN_Y - 4;
+
+    constexpr int16_t COMPOSE_BOX_Y = Display::DD_HEADER_H + 26;
+    constexpr int16_t COMPOSE_BOX_H = 90;
+    constexpr int16_t SCROLL_STEP_PX = 40;
+
+    int composeZone = -1;
+    int cancelZone = -1;
+
     void showChatScreen();
+    void drawChatScreen();
 
     void closeChat() {
         mode = Mode::Closed;
@@ -55,8 +86,8 @@ namespace {
     void appendMessage(const String& text, bool outgoing, float rssi) {
         if (messageCount >= MAX_MESSAGES) {
             // Storico pieno: scarta il piu' vecchio per fare posto al
-            // nuovo (una chat non ha bisogno di conservare tutto,
-            // solo la conversazione recente).
+            // nuovo (una chat non ha bisogno di conservare tutto, solo
+            // la conversazione recente).
             for (int i = 1; i < MAX_MESSAGES; i++) {
                 messages[i - 1] = messages[i];
             }
@@ -69,148 +100,170 @@ namespace {
         messageCount++;
     }
 
-    void rebuildMessageList() {
-        if (listContent == nullptr) {
-            return;
+    String buildMessageText(int index) {
+        const ChatMessage& msg = messages[index];
+        String text = (msg.outgoing ? "TU: " : "LORA: ") + msg.text;
+        if (!msg.outgoing) {
+            char suffix[24];
+            snprintf(suffix, sizeof(suffix), "  (RSSI %.0f)", msg.rssi);
+            text += suffix;
         }
+        return text;
+    }
 
-        lv_obj_clean(listContent);
+    int16_t messageBoxHeight(int index) {
+        return Display::wrappedTextHeight(buildMessageText(index), TEXT_W) + (BOX_PAD * 2);
+    }
 
+    // Indice piu' in alto raggiungibile scorrendo verso il basso (verso
+    // gli ultimi messaggi): quello che lascia l'ultimo messaggio ancora
+    // intero e visibile in fondo, riempiendo con quanti altri entrano
+    // sopra - mai un fumetto tagliato a meta'.
+    int computeMaxTopIndex() {
         if (messageCount == 0) {
-            lv_obj_t* empty = lv_label_create(listContent);
-            lv_label_set_text(
-                empty,
-                "Nessun messaggio ancora.\n"
-                "Mesh a 3 salti: raggiungi anche nodi fuori dal tuo raggio radio diretto."
-            );
-            lv_obj_set_style_text_color(empty, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
-            lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(empty, LV_PCT(100));
-            return;
+            return 0;
         }
 
-        for (int i = 0; i < messageCount; i++) {
-            const ChatMessage& msg = messages[i];
+        int16_t viewportH = LIST_BOTTOM - LIST_TOP;
+        int i = messageCount - 1;
+        int16_t used = 0;
+        int firstVisible = i;
 
-            lv_obj_t* row = lv_obj_create(listContent);
-            lv_obj_remove_style_all(row);
-            lv_obj_set_width(row, LV_PCT(100));
-            lv_obj_set_height(row, LV_SIZE_CONTENT);
-            lv_obj_set_style_pad_all(row, 6, LV_PART_MAIN);
-            lv_obj_set_style_radius(row, 4, LV_PART_MAIN);
-            lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-            // Blu (COLOR_ACCENT) per i tuoi, verde ben visibile per i
-            // ricevuti: prima erano blu/grigio scuro, troppo simili sullo
-            // sfondo nero e facili da confondere.
-            lv_obj_set_style_border_color(
-                row,
-                msg.outgoing ? Display::COLOR_ACCENT : lv_color_hex(0x2ECC71),
-                LV_PART_MAIN
-            );
-            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-            String text = (msg.outgoing ? "Tu: " : "LoRa: ") + msg.text;
-            if (!msg.outgoing) {
-                char rssiSuffix[24];
-                snprintf(rssiSuffix, sizeof(rssiSuffix), "  (RSSI %.0f)", msg.rssi);
-                text += rssiSuffix;
+        while (i >= 0) {
+            int16_t h = messageBoxHeight(i) + BOX_GAP;
+            if (used > 0 && used + h > viewportH) {
+                break;
             }
-
-            lv_obj_t* label = lv_label_create(row);
-            lv_label_set_text(label, text.c_str());
-            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(label, LV_PCT(100));
-            lv_obj_set_style_text_color(label, Display::COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+            used += h;
+            firstVisible = i;
+            i--;
         }
 
-        lv_obj_scroll_to_view(lv_obj_get_child(listContent, messageCount - 1), LV_ANIM_OFF);
+        return firstVisible;
+    }
+
+    void ensureBottomVisible() {
+        topVisibleMsgIndex = computeMaxTopIndex();
+        followingTail = true;
+    }
+
+    void drawHeaderTitle(const char* title) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, Display::DD_HEADER_H + 8);
+        gfx->print(title);
+
+        gfx->setTextColor(Display::DD_TEXT_DIM);
+        gfx->setCursor(228, Display::DD_HEADER_H + 8);
+        gfx->print("[B] INDIETRO");
+    }
+
+    void drawButton(int16_t y, const char* label, bool focused) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->drawRect(BTN_X, y, BTN_W, BTN_H, focused ? Display::DD_ACCENT : Display::DD_ACCENT_DIM);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(BTN_X + 12, y + BTN_H / 2 - 3);
+        gfx->print(label);
     }
 
     // Risponde a "come faccio a sapere se sto trasmettendo?": mostra lo
-    // stato in tempo reale, colorato in arancione mentre un invio e'
-    // effettivamente in corso (stesso colore usato per l'icona LoRa in
-    // alto). Aggiornata ad ogni ciclo mentre questa schermata e' visibile
-    // (vedi update()), non solo quando arriva/parte un messaggio.
-    void updateStatusLabel() {
-        if (statusLabel == nullptr) {
-            return;
-        }
+    // stato in tempo reale, arancione mentre un invio e' effettivamente
+    // in corso. Ridisegna solo il pezzo di riga interessato, e solo se il
+    // testo e' davvero cambiato (stesso principio del fix sul percento
+    // di NetScanUI: un ridisegno ad ogni ciclo anche a testo invariato
+    // e' lo stesso errore gia' preso una volta).
+    void drawStatusTag() {
+        Arduino_GFX* gfx = Display::getGfx();
+        String text;
+        uint16_t color;
 
         if (LoRaRadio::isTransmitting()) {
             int pending = LoRaRadio::pendingCount();
-            char text[48];
             if (pending > 0) {
-                snprintf(text, sizeof(text), LV_SYMBOL_UPLOAD " Invio in corso... (%d in coda)", pending);
+                char buf[40];
+                snprintf(buf, sizeof(buf), "INVIO IN CORSO... (%d IN CODA)", pending);
+                text = buf;
             } else {
-                snprintf(text, sizeof(text), LV_SYMBOL_UPLOAD " Invio in corso...");
+                text = "INVIO IN CORSO...";
             }
-            lv_label_set_text(statusLabel, text);
-            lv_obj_set_style_text_color(statusLabel, lv_color_hex(0xE67E22), 0);
+            color = gfx->color565(0xE6, 0x7E, 0x22);
         } else {
-            lv_label_set_text(statusLabel, LV_SYMBOL_LOOP " In ascolto");
-            lv_obj_set_style_text_color(statusLabel, lv_color_hex(0x888888), 0);
+            text = "IN ASCOLTO";
+            color = Display::DD_TEXT_DIM;
         }
+
+        if (text == lastStatusText) {
+            return;
+        }
+        lastStatusText = text;
+
+        gfx->fillRect(0, STATUS_Y, 320, 11, Display::DD_BG);
+        gfx->setFont(nullptr);
+        gfx->setTextSize(1);
+        gfx->setTextWrap(false);
+        gfx->setTextColor(color);
+        gfx->setCursor(8, STATUS_Y);
+        gfx->print(text);
     }
 
-    void composeCb(lv_event_t* event);
+    void drawMessageBox(int index, int16_t y) {
+        Arduino_GFX* gfx = Display::getGfx();
+        String text = buildMessageText(index);
+        int16_t boxH = messageBoxHeight(index);
 
-    void buildChatScreen() {
-        lv_obj_t* content = nullptr;
-        chatScreen = Display::createScreen("LoRa Chat", &content, closeChat);
+        uint16_t borderColor = messages[index].outgoing
+            ? Display::DD_ACCENT
+            : gfx->color565(0x2E, 0xCC, 0x71);
 
-        statusLabel = lv_label_create(content);
-        lv_obj_set_style_text_font(statusLabel, &lv_font_montserrat_14, 0);
-        lv_obj_align(statusLabel, LV_ALIGN_TOP_LEFT, 0, 0);
-        updateStatusLabel();
+        gfx->drawRect(BTN_X, y, BTN_W, boxH, borderColor);
+        Display::drawWrappedText(BTN_X + BOX_PAD, y + BOX_PAD, TEXT_W, text, Display::DD_TEXT);
+    }
 
-        listContent = lv_obj_create(content);
-        lv_obj_remove_style_all(listContent);
-        lv_obj_set_size(listContent, LV_PCT(100), 116);
-        lv_obj_align_to(listContent, statusLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-        lv_obj_add_flag(listContent, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scroll_dir(listContent, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(listContent, LV_SCROLLBAR_MODE_AUTO);
-        lv_obj_set_layout(listContent, LV_LAYOUT_FLEX);
-        lv_obj_set_flex_flow(listContent, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(listContent, 4, LV_PART_MAIN);
+    void drawChatScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("LORA CHAT");
+        lastStatusText = "";
+        drawStatusTag();
 
-        lv_obj_t* composeBtn = lv_btn_create(content);
-        lv_obj_set_size(composeBtn, LV_PCT(100), 34);
-        lv_obj_align(composeBtn, LV_ALIGN_BOTTOM_MID, 0, 0);
-        lv_obj_set_style_bg_color(composeBtn, lv_color_hex(0x0A1A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(composeBtn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(composeBtn, Display::COLOR_ACCENT, LV_PART_MAIN);
-        lv_obj_set_style_border_width(composeBtn, 1, LV_PART_MAIN);
-        lv_obj_set_style_radius(composeBtn, 4, LV_PART_MAIN);
-        lv_obj_add_event_cb(composeBtn, composeCb, LV_EVENT_CLICKED, nullptr);
+        TouchUI::clearZones();
+        composeZone = -1;
 
-        lv_obj_t* composeLabel = lv_label_create(composeBtn);
-        lv_label_set_text(composeLabel, LV_SYMBOL_EDIT " Scrivi messaggio");
-        lv_obj_center(composeLabel);
-        lv_obj_set_style_text_color(composeLabel, Display::COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(composeLabel, &lv_font_montserrat_14, 0);
+        if (messageCount == 0) {
+            Display::drawWrappedText(
+                BTN_X, LIST_TOP + 4, TEXT_W,
+                "Nessun messaggio ancora.\nMesh a 3 salti: raggiungi anche nodi fuori dal tuo raggio radio diretto.",
+                Display::DD_TEXT_DIM
+            );
+        } else {
+            int16_t y = LIST_TOP;
+            int i = topVisibleMsgIndex;
+            while (i < messageCount) {
+                int16_t h = messageBoxHeight(i);
+                if (i != topVisibleMsgIndex && y + h > LIST_BOTTOM) {
+                    break;
+                }
+                drawMessageBox(i, y);
+                y += h + BOX_GAP;
+                i++;
+            }
+        }
 
-        rebuildMessageList();
+        drawButton(COMPOSE_BTN_Y, "[ SCRIVI ] NUOVO MESSAGGIO", true);
+        composeZone = TouchUI::addZone(BTN_X, COMPOSE_BTN_Y, BTN_W, BTN_H);
     }
 
     void showChatScreen() {
         mode = Mode::Chat;
         Input::setTextEntryMode(false);
-
-        // Aprire la chat e' l'azione di "acknowledge": da qui in poi
-        // l'icona in alto torna del colore normale.
         hasUnread = false;
-
-        if (chatScreen != nullptr) {
-            lv_obj_del(chatScreen);
-            chatScreen = nullptr;
-            listContent = nullptr;
-        }
-
-        buildChatScreen();
-        lv_scr_load(chatScreen);
+        ensureBottomVisible();
+        drawChatScreen();
     }
 
     void sendComposedMessage() {
@@ -222,11 +275,10 @@ namespace {
         }
 
         // LoRaRadio::send() e' non bloccante (avvia l'invio in
-        // background, come Meshtastic): torna subito, senza dover
-        // mostrare un avviso "invio in corso" e aspettare - la
-        // trasmissione vera e propria (che con lo spreading factor
-        // attuale puo' durare anche secondi) prosegue per conto suo
-        // mentre l'interfaccia resta reattiva.
+        // background, come Meshtastic): torna subito, la trasmissione
+        // vera e propria (che con lo spreading factor attuale puo'
+        // durare anche secondi) prosegue per conto suo mentre
+        // l'interfaccia resta reattiva.
         appendMessage(text, true, 0.0f);
 
         bool accepted = LoRaRadio::send(text);
@@ -238,90 +290,120 @@ namespace {
         showChatScreen();
     }
 
-    void buildComposeScreen() {
-        lv_obj_t* content = nullptr;
-        composeScreen = Display::createScreen("Nuovo messaggio", &content, showChatScreen);
+    void drawComposeScreen() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillScreen(Display::DD_BG);
+        Display::drawHeaderBar();
+        drawHeaderTitle("NUOVO MESSAGGIO");
 
-        composeBuffer = "";
+        TouchUI::clearZones();
 
-        composeTextarea = lv_textarea_create(content);
-        lv_textarea_set_one_line(composeTextarea, false);
-        lv_textarea_set_text(composeTextarea, "");
-        lv_obj_set_width(composeTextarea, LV_PCT(100));
-        lv_obj_set_height(composeTextarea, 90);
-        lv_obj_align(composeTextarea, LV_ALIGN_TOP_LEFT, 0, 0);
+        gfx->drawRect(BTN_X, COMPOSE_BOX_Y, BTN_W, COMPOSE_BOX_H, Display::DD_ACCENT_DIM);
+        Display::drawWrappedText(BTN_X + BOX_PAD, COMPOSE_BOX_Y + BOX_PAD, BTN_W - (BOX_PAD * 2), composeBuffer, Display::DD_TEXT);
 
-        lv_obj_t* hint = lv_label_create(content);
-        lv_label_set_text(hint, "Scrivi con la tastiera fisica, Invio per inviare.");
-        lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(hint, Display::COLOR_TEXT, 0);
-        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(hint, LV_PCT(100));
-        lv_obj_align_to(hint, composeTextarea, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+        Display::drawWrappedText(
+            BTN_X, COMPOSE_BOX_Y + COMPOSE_BOX_H + 8, BTN_W,
+            "Scrivi con la tastiera fisica, Invio per inviare.",
+            Display::DD_TEXT_DIM
+        );
+
+        drawButton(200, "[ ANNULLA ]", true);
+        cancelZone = TouchUI::addZone(BTN_X, 200, BTN_W, BTN_H);
     }
 
     void showComposeScreen() {
         mode = Mode::Compose;
         Input::setTextEntryMode(true);
-
-        if (composeScreen != nullptr) {
-            lv_obj_del(composeScreen);
-            composeScreen = nullptr;
-        }
-
-        buildComposeScreen();
-        lv_scr_load(composeScreen);
-    }
-
-    void composeCb(lv_event_t* event) {
-        (void)event;
-        showComposeScreen();
+        composeBuffer = "";
+        drawComposeScreen();
     }
 
     void handleChatInput() {
-        InputEvent event = Input::getEvent();
+        int16_t dragDelta = TouchUI::pollDragDeltaY();
+        if (dragDelta != 0 && messageCount > 0) {
+            dragAccumY += dragDelta;
 
-        if (event == InputEvent::Back) {
-            closeChat();
-        } else if (event == InputEvent::Select) {
+            int maxTop = computeMaxTopIndex();
+            bool scrolled = false;
+            while (dragAccumY >= SCROLL_STEP_PX && topVisibleMsgIndex > 0) {
+                topVisibleMsgIndex--;
+                dragAccumY -= SCROLL_STEP_PX;
+                scrolled = true;
+            }
+            while (dragAccumY <= -SCROLL_STEP_PX && topVisibleMsgIndex < maxTop) {
+                topVisibleMsgIndex++;
+                dragAccumY += SCROLL_STEP_PX;
+                scrolled = true;
+            }
+            if (topVisibleMsgIndex == 0 && dragAccumY > SCROLL_STEP_PX) {
+                dragAccumY = SCROLL_STEP_PX;
+            }
+            if (topVisibleMsgIndex == maxTop && dragAccumY < -SCROLL_STEP_PX) {
+                dragAccumY = -SCROLL_STEP_PX;
+            }
+
+            followingTail = (topVisibleMsgIndex >= maxTop);
+            if (scrolled) {
+                drawChatScreen();
+            }
+        }
+
+        int tapped = TouchUI::pollTap();
+        if (tapped == composeZone) {
             showComposeScreen();
-        } else if (event == InputEvent::Up) {
-            // Nessuna voce "selezionabile" nella lista (solo testo da
-            // leggere): su/giu' scorrono la cronologia, cosi' funziona
-            // anche col trackball e non solo col touch.
-            if (listContent != nullptr) {
-                lv_obj_scroll_by(listContent, 0, 40, LV_ANIM_ON);
+            return;
+        }
+
+        drawStatusTag();
+
+        InputEvent event = Input::getEvent();
+        switch (event) {
+            case InputEvent::Back:
+                closeChat();
+                break;
+
+            case InputEvent::Select:
+                showComposeScreen();
+                break;
+
+            case InputEvent::Up: {
+                if (topVisibleMsgIndex > 0) {
+                    topVisibleMsgIndex--;
+                    followingTail = (topVisibleMsgIndex >= computeMaxTopIndex());
+                    drawChatScreen();
+                }
+                break;
             }
-        } else if (event == InputEvent::Down) {
-            if (listContent != nullptr) {
-                lv_obj_scroll_by(listContent, 0, -40, LV_ANIM_ON);
+
+            case InputEvent::Down: {
+                int maxTop = computeMaxTopIndex();
+                if (topVisibleMsgIndex < maxTop) {
+                    topVisibleMsgIndex++;
+                    followingTail = (topVisibleMsgIndex >= maxTop);
+                    drawChatScreen();
+                }
+                break;
             }
+
+            default:
+                break;
         }
     }
 
     void handleComposeInput() {
-        InputEvent event = Input::getEvent();
-        if (event == InputEvent::None) {
+        int tapped = TouchUI::pollTap();
+        if (tapped == cancelZone) {
+            showChatScreen();
             return;
         }
 
-        if (event == InputEvent::Select) {
+        TextInputUI::Result result = TextInputUI::handleKey(composeBuffer, MAX_MESSAGE_LEN);
+        if (result == TextInputUI::Result::Changed) {
+            Arduino_GFX* gfx = Display::getGfx();
+            gfx->fillRect(BTN_X + 1, COMPOSE_BOX_Y + 1, BTN_W - 2, COMPOSE_BOX_H - 2, Display::DD_BG);
+            Display::drawWrappedText(BTN_X + BOX_PAD, COMPOSE_BOX_Y + BOX_PAD, BTN_W - (BOX_PAD * 2), composeBuffer, Display::DD_TEXT);
+        } else if (result == TextInputUI::Result::Confirmed) {
             sendComposedMessage();
-            return;
-        }
-
-        if (event == InputEvent::Key) {
-            char key = Input::getKey();
-
-            if (key == 0x08 || key == 0x7F) {
-                if (composeBuffer.length() > 0) {
-                    composeBuffer.remove(composeBuffer.length() - 1);
-                }
-            } else if (key >= 32 && key < 127 && composeBuffer.length() < MAX_MESSAGE_LEN) {
-                composeBuffer += key;
-            }
-
-            lv_textarea_set_text(composeTextarea, composeBuffer.c_str());
         }
     }
 
@@ -349,6 +431,7 @@ namespace LoRaChatUI {
             return;
         }
 
+        Display::setDirectDrawMode(true);
         showChatScreen();
     }
 
@@ -356,13 +439,13 @@ namespace LoRaChatUI {
         return mode != Mode::Closed;
     }
 
+    // Drena i messaggi ricevuti nella cronologia SEMPRE, non solo quando
+    // la chat e' aperta: LoRaRadio ha un solo "slot" per il messaggio in
+    // arrivo, che verrebbe sovrascritto (messaggio perso) se ne arrivasse
+    // un secondo prima che la chat, riaperta piu' tardi, lo consumi. Va
+    // chiamata ad ogni ciclo da App.cpp, indipendentemente dalla
+    // schermata attiva.
     void poll() {
-        // Drena i messaggi ricevuti nella cronologia SEMPRE, non solo
-        // quando la chat e' aperta: LoRaRadio/BleChat hanno un solo
-        // "slot" per il messaggio in arrivo, che verrebbe sovrascritto
-        // (messaggio perso) se arrivasse un secondo pacchetto prima che
-        // la chat, riaperta piu' tardi, lo consumi. Va chiamata ad ogni
-        // ciclo da App.cpp, indipendentemente dalla schermata attiva.
         if (!LoRaRadio::available()) {
             return;
         }
@@ -372,7 +455,10 @@ namespace LoRaChatUI {
         Sound::playLoRaMessageReceived();
 
         if (mode == Mode::Chat) {
-            rebuildMessageList();
+            if (followingTail) {
+                ensureBottomVisible();
+            }
+            drawChatScreen();
         } else {
             // Non si e' sulla chat in questo momento: resta "non letto"
             // (icona gialla in alto) finche' non la si riapre.
@@ -385,15 +471,10 @@ namespace LoRaChatUI {
     }
 
     void update() {
-        if (mode == Mode::Closed) {
-            return;
-        }
-
         switch (mode) {
             case Mode::Closed:
                 break;
             case Mode::Chat:
-                updateStatusLabel();
                 handleChatInput();
                 break;
             case Mode::Compose:

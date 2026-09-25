@@ -24,7 +24,6 @@
 #include "ParkUI.h"
 #include "LoRaChatUI.h"
 #include "BleChat.h"
-#include "BleChatUI.h"
 #include "ScreenLock.h"
 
 namespace {
@@ -80,8 +79,9 @@ namespace {
             // richiesta, restano voci di menu presenti ma senza ancora
             // una destinazione: il tap non fa nulla per ora. BLE GATT in
             // particolare prendera' il posto della vecchia chat BLE
-            // (BleChatUI/BleChat.cpp, lasciate sul disco ma non piu'
-            // raggiungibili da qui) con una scansione/connessione GATT ai
+            // (BleChatUI.cpp/.h eliminati il 26/09, non piu' raggiungibile;
+            // BleChat.cpp/.h col radio di basso livello restano) con una
+            // scansione/connessione GATT ai
             // dispositivi Bluetooth nelle vicinanze - obiettivo: leggere
             // i sensori di casa (temperatura, umidita', ecc.) che
             // trasmettono via BLE.
@@ -164,10 +164,15 @@ namespace App {
         ScreenLock::update();
 
         if (!ScreenLock::isLocked()) {
-            // Mentre la schermata WiFi e' aperta gestisce lei l'input al
-            // posto del menu principale (altrimenti Menu::update() muoverebbe
-            // in silenzio anche la selezione della griglia dietro le quinte).
-            if (WifiUI::isActive()) {
+            // Un messaggio (Display::showMessage) intercetta SEMPRE
+            // l'input per primo, qualunque sia la schermata "attiva" per
+            // il resto del dispatch: molte chiamate a showMessage()
+            // arrivano da un open() che ritorna subito dopo (es. "prima
+            // connettiti al WiFi"), senza che nessun modulo specifico
+            // resti isActive() per intercettare Indietro/Select/tap.
+            if (Display::isMessageActive()) {
+                Display::updateMessage();
+            } else if (WifiUI::isActive()) {
                 WifiUI::update();
             } else if (SettingsUI::isActive()) {
                 SettingsUI::update();
@@ -185,8 +190,6 @@ namespace App {
                 NetGuardUI::update();
             } else if (LoRaChatUI::isActive()) {
                 LoRaChatUI::update();
-            } else if (BleChatUI::isActive()) {
-                BleChatUI::update();
             } else {
                 Menu::update();
             }
@@ -214,7 +217,6 @@ namespace App {
         // perdere messaggi arrivati nel frattempo, vedi i commenti nei
         // rispettivi poll()).
         LoRaChatUI::poll();
-        BleChatUI::poll();
 
         // Saltata anch'essa quando bloccato: Display::update() chiama
         // lv_timer_handler(), che elabora i tocchi tramite l'indev LVGL
@@ -233,11 +235,9 @@ namespace App {
             Display::update();
         }
 
-        // Diagnostica temporanea: segnalazioni dell'utente di funzioni
-        // che sembrano "non accorgersi" del WiFi dopo l'aumento del pool
-        // LVGL - verifica dal vivo se e' un problema di memoria libera
-        // in esaurimento sotto carico reale (WiFi+BLE+LoRa+GPS insieme),
-        // non riproducibile isolando un solo sottosistema alla volta.
+        // Diagnostica periodica: memoria libera reale sotto carico
+        // (WiFi+BLE+LoRa+GPS insieme), non riproducibile isolando un
+        // solo sottosistema alla volta.
         static uint32_t lastHeapLogMs = 0;
         if (millis() - lastHeapLogMs > 5000) {
             lastHeapLogMs = millis();
@@ -247,27 +247,19 @@ namespace App {
                 CrashLog::getLastRawResetReason()
             );
 
-            // Pool INTERNO di LVGL (64KB fissi, separato dall'heap ESP32
-            // sopra): diagnostica per confermare dal vivo se il crash
-            // ricorrente durante i redraw (vedi lv_conf.h) e' esaurimento
-            // puro o frammentazione (used_pct alto ma free_biggest_size
-            // piccolo pur con free_size non trascurabile).
-            lv_mem_monitor_t lvMon;
-            lv_mem_monitor(&lvMon);
-            DEBUG_PRINTF(
-                "[LVMEM] usato=%u%% frammentazione=%u%% libero=%u max_blocco_libero=%u\n",
-                lvMon.used_pct, lvMon.frag_pct, static_cast<unsigned>(lvMon.free_size),
-                static_cast<unsigned>(lvMon.free_biggest_size)
-            );
-
             // Diagnostica schermo nero (2026-09-23/24): valore REALE di
             // luminosita' applicato in questo momento, non solo quello
             // caricato una volta al boot - un log periodico invece che
             // "una tantum" evita del tutto il problema di dover azzeccare
             // la finestra giusta subito dopo un reset (vedi note in
             // project_crash_diagnosis_workflow sulla ri-enumerazione USB).
+            // psram_ok: vedi Display::areBuffersOk() - prova di
+            // allocazione PSRAM fatta in Display::begin() (prima
+            // verificava i buffer LVGL, ora e' un test diretto, stesso
+            // scopo: la causa storica dello schermo nero silenzioso era
+            // il flag PSRAM=opi mancante in compilazione).
             DEBUG_PRINTF(
-                "[BACKLIGHT] schermo=%d%% tastiera=%d%% screenlock_attivo=%d buffer_lvgl_ok=%d disegno_diretto=%d\n",
+                "[BACKLIGHT] schermo=%d%% tastiera=%d%% screenlock_attivo=%d psram_ok=%d disegno_diretto=%d\n",
                 Board::getBacklightPercent(), Board::getKeyboardBacklightPercent(),
                 ScreenLock::isLocked() ? 1 : 0, Display::areBuffersOk() ? 1 : 0,
                 Display::isDirectDrawMode() ? 1 : 0

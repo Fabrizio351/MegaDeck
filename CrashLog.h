@@ -70,7 +70,8 @@ namespace CrashLog {
     // Registra un guasto intercettato "in diretta" (prima di un riavvio
     // volontario) nella stessa cronologia rotante dei crash veri, con le
     // breadcrumb della sessione corrente. Va chiamata subito prima di
-    // riavviare - vedi crashlog_record_lvgl_oom_and_restart() in
-    // CrashLog.cpp per l'uso reale (assert di malloc fallita in LVGL).
+    // riavviare. Usata in passato dall'assert-handler di LVGL (rimosso
+    // il 26/09, vedi project_lvgl_removal_rewrite in memoria); generica,
+    // riutilizzabile per futuri guasti intercettati.
     void recordControlledFault(const char* reason);
 }

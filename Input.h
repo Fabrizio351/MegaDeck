@@ -24,10 +24,9 @@ namespace Input {
     char getKey();
     bool available();
 
-    // Il touch invece e' registrato come vero lv_indev_t (pointer) dentro
-    // Input::begin(): i tap sui bottoni del menu arrivano a LVGL tramite
-    // gli eventi LV_EVENT_CLICKED sui widget, non serve piu' hit-test
-    // manuale ne' interrogare queste funzioni dal Menu.
+    // Stato touch "grezzo" gia' debounced (vedi Input.cpp): letto da
+    // TouchUI per il proprio hit-test manuale sulle zone registrate da
+    // ogni schermata.
     bool isTouched();
     int16_t getTouchX();
     int16_t getTouchY();
@@ -42,12 +41,9 @@ namespace Input {
     void setTextEntryMode(bool enabled);
     bool isTextEntryMode();
 
-    // Sospende la lettura dell'indev touch (vedi Input::update()): serve
-    // a ScreenLock per impedire che un tocco sulla schermata "congelata"
-    // durante il blocco raggiunga comunque i bottoni LVGL sottostanti -
-    // l'elaborazione del touch (compreso il dispatch dei click) avviene
-    // dentro lv_indev_read(), chiamata da questo modulo PRIMA che il
-    // resto dell'app possa intervenire, quindi va fermata qui.
+    // Sospende la lettura touch (vedi Input::update()): serve a
+    // ScreenLock per impedire che un tocco sulla schermata "congelata"
+    // durante il blocco raggiunga comunque le zone toccabili sottostanti.
     // Tastiera/trackball restano invariati (servono per la combinazione
     // di sblocco).
     void setTouchSuppressed(bool suppressed);
