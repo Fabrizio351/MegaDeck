@@ -48,6 +48,77 @@ namespace {
     String lastCoordsLine1, lastCoordsLine2, lastSatText;
     String lastCountryText, lastDetailsText;
 
+    // Una riga di testo centrata orizzontalmente sui 320px dello schermo
+    // (larghezza nota a priori: stringa esatta, mai spezzata) - usata per
+    // coordinate e satelliti, richiesto centrato il 26/09.
+    void drawCenteredLine(int16_t y, const String& text, uint16_t color, uint8_t size) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextSize(size);
+        gfx->setTextWrap(false);
+        gfx->setTextColor(color);
+
+        int16_t textW = static_cast<int16_t>(text.length()) * 6 * size;
+        int16_t x = (320 - textW) / 2;
+        if (x < 0) {
+            x = 0;
+        }
+        gfx->setCursor(x, y);
+        gfx->print(text);
+    }
+
+    // Come Display::drawWrappedText(), ma ogni riga (anche quelle nate
+    // da un a-capo automatico) e' centrata singolarmente invece che
+    // allineata a sinistra - usata per nazione/dettagli.
+    void drawCenteredWrappedText(int16_t y, int16_t maxW, const String& text, uint16_t color, uint8_t size) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextSize(size);
+        gfx->setTextWrap(false);
+        gfx->setTextColor(color);
+
+        int16_t charW = 6 * size;
+        int16_t lineH = 11 * size;
+        int maxChars = maxW / charW;
+        if (maxChars < 1) {
+            maxChars = 1;
+        }
+
+        int16_t cursorY = y;
+        int pos = 0;
+        int len = text.length();
+
+        while (pos <= len) {
+            int newlinePos = text.indexOf('\n', pos);
+            int lineEnd = (newlinePos == -1) ? len : newlinePos;
+            int lineLen = lineEnd - pos;
+
+            if (lineLen == 0) {
+                cursorY += lineH;
+            } else {
+                int segStart = pos;
+                while (segStart < lineEnd) {
+                    int segLen = min(maxChars, lineEnd - segStart);
+                    String seg = text.substring(segStart, segStart + segLen);
+                    int16_t segW = static_cast<int16_t>(seg.length()) * charW;
+                    int16_t x = (320 - segW) / 2;
+                    if (x < 0) {
+                        x = 0;
+                    }
+                    gfx->setCursor(x, cursorY);
+                    gfx->print(seg);
+                    cursorY += lineH;
+                    segStart += segLen;
+                }
+            }
+
+            if (newlinePos == -1) {
+                break;
+            }
+            pos = newlinePos + 1;
+        }
+    }
+
     void closeGps() {
         active = false;
         Display::setDirectDrawMode(false);
@@ -107,46 +178,39 @@ namespace {
 
         if (line1 != lastCoordsLine1 || line2 != lastCoordsLine2) {
             gfx->fillRect(0, Display::DD_HEADER_H + 4, 320, 34, Display::DD_BG);
-            gfx->setFont(nullptr);
-            gfx->setTextSize(2);
-            gfx->setTextColor(Display::DD_ACCENT);
-            gfx->setCursor(8, Display::DD_HEADER_H + 6);
-            gfx->print(line1);
+            drawCenteredLine(Display::DD_HEADER_H + 6, line1, Display::DD_ACCENT, 2);
             if (line2.length() > 0) {
-                gfx->setCursor(8, Display::DD_HEADER_H + 22);
-                gfx->print(line2);
+                drawCenteredLine(Display::DD_HEADER_H + 22, line2, Display::DD_ACCENT, 2);
             }
             lastCoordsLine1 = line1;
             lastCoordsLine2 = line2;
         }
 
+        // Tornato a font piccolo (size 1, richiesto 26/09 - la size 2
+        // provata in precedenza sacrificava troppo spazio verticale),
+        // ma centrato come il resto della schermata.
         if (satText != lastSatText) {
-            gfx->fillRect(0, Display::DD_HEADER_H + 40, 320, 24, Display::DD_BG);
-            gfx->setFont(nullptr);
-            gfx->setTextSize(2);
-            gfx->setTextColor(Display::DD_TEXT);
-            gfx->setCursor(8, Display::DD_HEADER_H + 42);
-            gfx->print(satText);
+            gfx->fillRect(0, Display::DD_HEADER_H + 40, 320, 14, Display::DD_BG);
+            drawCenteredLine(Display::DD_HEADER_H + 42, satText, Display::DD_TEXT, 1);
             lastSatText = satText;
         }
     }
 
-    // Nazione/dettagli a size 2 (richiesto 26/09, come i satelliti sopra):
-    // dettagli piazzato dinamicamente subito sotto nazione in base
-    // all'altezza che nazione occupa davvero (puo' andare a capo su piu'
-    // righe), invece di due posizioni fisse - altrimenti col testo piu'
-    // grande un nome lungo avrebbe rischiato di sovrapporsi a dettagli.
+    // Nazione/dettagli: font piccolo (size 1, tornato indietro il 26/09)
+    // ma centrate come il resto della schermata - dettagli piazzato
+    // dinamicamente subito sotto nazione in base all'altezza che nazione
+    // occupa davvero (puo' andare a capo su piu' righe), invece di due
+    // posizioni fisse.
     void drawGeoResult(const String& country, const String& details) {
         Arduino_GFX* gfx = Display::getGfx();
-        constexpr int16_t GEO_TOP = Display::DD_HEADER_H + 68;
+        constexpr int16_t GEO_TOP = Display::DD_HEADER_H + 58;
         constexpr int16_t TEXT_W = 304;
-        constexpr uint8_t GEO_TEXT_SIZE = 2;
 
         gfx->fillRect(0, GEO_TOP, 320, BTN_Y - GEO_TOP, Display::DD_BG);
 
-        Display::drawWrappedText(8, GEO_TOP, TEXT_W, country, Display::DD_TEXT, GEO_TEXT_SIZE);
-        int16_t countryH = Display::wrappedTextHeight(country, TEXT_W, GEO_TEXT_SIZE);
-        Display::drawWrappedText(8, GEO_TOP + countryH + 4, TEXT_W, details, Display::DD_TEXT, GEO_TEXT_SIZE);
+        drawCenteredWrappedText(GEO_TOP, TEXT_W, country, Display::DD_TEXT, 1);
+        int16_t countryH = Display::wrappedTextHeight(country, TEXT_W, 1);
+        drawCenteredWrappedText(GEO_TOP + countryH + 4, TEXT_W, details, Display::DD_TEXT, 1);
 
         lastCountryText = country;
         lastDetailsText = details;
