@@ -420,6 +420,10 @@ void drawHeaderBar() {
     gfx->setCursor(12, 6);
     gfx->print(time.length() > 0 ? time : "...");
 
+    gfx->setTextColor(ConnStatus::isVpnConnected() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setCursor(120, 6);
+    gfx->print("VPN");
+
     gfx->setTextColor(ConnStatus::isWifiConnected() ? DD_ACCENT : DD_TEXT_DIM);
     gfx->setCursor(150, 6);
     gfx->print("WIFI");
@@ -449,6 +453,53 @@ void drawHeaderBar() {
     gfx->setTextColor(DD_TEXT_DIM);
     gfx->setCursor(288, 6);
     gfx->print(battText);
+}
+
+
+void refreshHeaderIfNeeded() {
+    if (!directDrawModeActive) {
+        return;
+    }
+
+    static bool everDrawn = false;
+    static bool lastWifi = false;
+    static bool lastVpn = false;
+    static bool lastBle = false;
+    static bool lastLora = false;
+    static bool lastGuardActive = false;
+    static bool lastGuardAlert = false;
+    static int lastBattery = -1;
+    static String lastTime;
+
+    bool wifi = ConnStatus::isWifiConnected();
+    bool vpn = ConnStatus::isVpnConnected();
+    bool ble = ConnStatus::isBluetoothActive();
+    bool lora = ConnStatus::isLoraActive();
+    bool guardActive = ConnStatus::isNetGuardActive();
+    bool guardAlert = ConnStatus::hasNetGuardPendingAlert();
+    int battery = Board::getBatteryPercent();
+    String time = GPS::getTimeLocal();
+
+    bool changed = !everDrawn
+        || wifi != lastWifi || vpn != lastVpn || ble != lastBle || lora != lastLora
+        || guardActive != lastGuardActive || guardAlert != lastGuardAlert
+        || battery != lastBattery || time != lastTime;
+
+    if (!changed) {
+        return;
+    }
+
+    drawHeaderBar();
+
+    everDrawn = true;
+    lastWifi = wifi;
+    lastVpn = vpn;
+    lastBle = ble;
+    lastLora = lora;
+    lastGuardActive = guardActive;
+    lastGuardAlert = guardAlert;
+    lastBattery = battery;
+    lastTime = time;
 }
 
 

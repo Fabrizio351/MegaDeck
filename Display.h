@@ -34,10 +34,21 @@ namespace Display {
     // Barra in alto condivisa per le schermate disegnate a mano - stessi
     // dati reali dell'header LVGL (ConnStatus, GPS, batteria) ma
     // disegnata direttamente. Da richiamare ad ogni apertura schermata e
-    // ogni volta che si vuole aggiornarla (nessun redraw automatico:
-    // niente ridisegno a tempo per non reintrodurre il problema gia'
-    // risolto altrove, vedi project_lvgl_pool_exhaustion_fix).
+    // ogni volta che si vuole aggiornarla esplicitamente.
     void drawHeaderBar();
+
+    // Richiama drawHeaderBar() da sola quando qualcosa di rilevante e'
+    // cambiato (wifi/vpn/ble/lora/netguard/batteria/ora) rispetto
+    // all'ultima volta, e SOLO in modalita' disegno diretto. Senza
+    // questo, l'header restava "congelato" con lo stato del momento
+    // dell'ultimo ridisegno di schermata: stando fermi sul menu, l'icona
+    // GUARD non diventava mai verde attivando NetGuard da un'altra
+    // schermata, perche' nulla la ridisegnava finche' non arrivava un
+    // input (segnalato 26/09). Nessun rischio di riesaurire il pool LVGL
+    // (vedi project_lvgl_pool_exhaustion_fix): drawHeaderBar() e' puro
+    // Arduino_GFX, non alloca nulla in LVGL. Da richiamare una volta per
+    // ciclo da App::update().
+    void refreshHeaderIfNeeded();
 
     // Colori condivisi fra le schermate disegnate a mano - stessa
     // palette validata in Fase 1 (verde matrix). RGB565, non 24 bit.

@@ -258,6 +258,12 @@ namespace App {
         // Saltare anche il redraw fa risparmiare ulteriore CPU/batteria
         // mentre e' bloccato, coerente con l'obiettivo della funzione.
         if (!ScreenLock::isLocked()) {
+            // Ridisegna la barra in alto da sola quando qualcosa cambia
+            // (wifi/vpn/ble/lora/netguard/batteria/ora), anche se la
+            // schermata attiva non si sta ridisegnando per conto suo -
+            // altrimenti restava "congelata" allo stato dell'ultimo
+            // ridisegno finche' non arrivava un input (vedi Display.h).
+            Display::refreshHeaderIfNeeded();
             Display::update();
         }
 

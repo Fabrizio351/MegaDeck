@@ -3,6 +3,7 @@
 #include "Sound.h"
 #include "Display.h"
 #include "Menu.h"
+#include "Config.h"
 
 #include <WiFi.h>
 
@@ -169,6 +170,7 @@ namespace NetGuard {
         if (newEnabled && NetScan::getDeviceCount() == 0) {
             // Niente whitelist: non c'e' nulla da controllare - il
             // chiamante mostra il motivo all'utente.
+            DEBUG_PRINTF("[NETGUARD] setEnabled(true) rifiutato: whitelist vuota (device_count=%d)\n", NetScan::getDeviceCount());
             return false;
         }
 
@@ -176,6 +178,7 @@ namespace NetGuard {
             return true;
         }
 
+        DEBUG_PRINTF("[NETGUARD] enabled: %d -> %d (wifi_status=%d, device_count=%d)\n", enabled, newEnabled, WiFi.status(), NetScan::getDeviceCount());
         enabled = newEnabled;
         scanInProgress = false;
 
