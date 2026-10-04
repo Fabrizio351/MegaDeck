@@ -106,11 +106,16 @@ namespace {
         Display::drawWrappedText(16, ICON_CENTER_Y + 40, 288, text, Display::DD_TEXT);
     }
 
-    void showCondition(WeatherLookup::Condition condition) {
+    // Immagine sopra (icona, invariata) e scritta sotto (richiesto
+    // 26/09): l'icona resta quella della prossima ora, la tendenza
+    // (confronto con fra ~4 ore, vedi WeatherLookup.cpp) va su una riga
+    // separata sotto, per "capire come butta" oltre alla sola ora
+    // immediatamente successiva.
+    void showCondition(const WeatherLookup::Result& result) {
         clearResultArea();
 
         const char* text = "-";
-        switch (condition) {
+        switch (result.condition) {
             case WeatherLookup::Condition::Sereno:
                 drawSun();
                 text = "Sereno nella prossima ora";
@@ -129,6 +134,10 @@ namespace {
         }
 
         Display::drawWrappedText(16, ICON_CENTER_Y + 40, 288, text, Display::DD_TEXT);
+
+        if (result.trend.length() > 0) {
+            Display::drawWrappedText(16, ICON_CENTER_Y + 56, 288, result.trend, Display::DD_ACCENT);
+        }
     }
 
     void fetchAndShow() {
@@ -158,7 +167,7 @@ namespace {
             return;
         }
 
-        showCondition(result.condition);
+        showCondition(result);
     }
 
 } // namespace

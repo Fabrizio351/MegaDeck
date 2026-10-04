@@ -46,14 +46,41 @@ namespace {
     // JSON vero, la profondita' di annidamento non conta: trova comunque
     // la prossima coppia "lat"/"lon" in entrambi i casi. Niente libreria
     // JSON (stesso approccio di GeoLookup/WeatherLookup).
+    // Cerca "name":"..." nei "tags" dell'elemento corrente, cercando
+    // SOLO fino al prossimo elemento ("\"type\":\"" successivo, o la
+    // fine della risposta) - il nome sta sempre dopo lat/lon sia per i
+    // nodi singoli sia per le aree con "center" (verificato sul formato
+    // reale "out center" di Overpass). Gestisce il raro caso di
+    // virgolette interne sfuggite ("\\\"").
+    String extractName(const String& json, int fromPos, int boundEnd) {
+        int namePos = json.indexOf("\"name\":\"", fromPos);
+        if (namePos < 0 || namePos >= boundEnd) {
+            return String();
+        }
+        namePos += 8;
+
+        int nameEnd = json.indexOf('"', namePos);
+        while (nameEnd > 0 && nameEnd < boundEnd && json[nameEnd - 1] == '\\') {
+            nameEnd = json.indexOf('"', nameEnd + 1);
+        }
+        if (nameEnd < 0 || nameEnd > boundEnd) {
+            return String();
+        }
+
+        String raw = json.substring(namePos, nameEnd);
+        raw.replace("\\\"", "\"");
+        return raw;
+    }
+
     bool findNearest(
         const String& json, double fromLat, double fromLon,
-        double* outDistance, double* outLat, double* outLon
+        double* outDistance, double* outLat, double* outLon, String* outName
     ) {
         bool found = false;
         double minDistance = 0.0;
         double bestLat = 0.0;
         double bestLon = 0.0;
+        String bestName;
 
         int pos = 0;
         while (true) {
@@ -92,6 +119,10 @@ namespace {
                 bestLat = nodeLat;
                 bestLon = nodeLon;
                 found = true;
+
+                int nextElementPos = json.indexOf("\"type\":\"", lonEnd);
+                int boundEnd = (nextElementPos < 0) ? json.length() : nextElementPos;
+                bestName = extractName(json, lonEnd, boundEnd);
             }
 
             pos = lonEnd;
@@ -101,15 +132,21 @@ namespace {
             *outDistance = minDistance;
             *outLat = bestLat;
             *outLon = bestLon;
+            if (outName != nullptr) {
+                *outName = bestName;
+            }
         }
         return found;
     }
-}
 
-namespace ParkLookup {
-
-    Result findNearestPark(double lat, double lon) {
-        Result result;
+    // Esegue una query Overpass QL gia' completamente formata
+    // ("filterBody": una o piu' istruzioni tipo "nwr(around:R,lat,lon)
+    // %5Btag=valore%5D;", "[" "]" gia' percent-encoded) e ne fa il
+    // parsing col risultato piu' vicino. Fattorizza l'HTTP+parsing comune
+    // alle tre categorie (park, acqua, benzina) - prima duplicato per
+    // intero dentro findNearestPark(), ora condiviso.
+    ParkLookup::Result runOverpassQuery(double lat, double lon, const String& filterBody) {
+        ParkLookup::Result result;
         result.valid = false;
         result.distanceMeters = 0.0;
         result.bearingDegrees = 0.0;
@@ -128,23 +165,8 @@ namespace ParkLookup {
         client.setInsecure();
 
         HTTPClient http;
-        char url[500];
-        // Query Overpass QL con "[" "]" e spazi percent-encoded (%5B %5D
-        // %20): gli altri caratteri (: ; ( ) , =) sono tollerati non
-        // codificati in una query string. Unione di due filtri (parco +
-        // area pic-nic) tramite "nwr" (node/way/relation, non solo nodi
-        // come per l'acqua: i parchi sono spesso poligoni) e
-        // "out center" per avere comunque un punto utilizzabile.
-        snprintf(
-            url, sizeof(url),
-            "https://overpass-api.de/api/interpreter?data="
-            "%%5Bout:json%%5D;(nwr(around:%.0f,%.6f,%.6f)%%5Bleisure=park%%5D;"
-            "nwr(around:%.0f,%.6f,%.6f)%%5Btourism=picnic_site%%5D;);"
-            "out%%20center%%20qt%%20%d;",
-            SEARCH_RADIUS_METERS, lat, lon,
-            SEARCH_RADIUS_METERS, lat, lon,
-            MAX_RESULTS
-        );
+        String url = "https://overpass-api.de/api/interpreter?data="
+            "%5Bout:json%5D;" + filterBody + "out%20center%20qt%20" + String(MAX_RESULTS) + ";";
 
         if (!http.begin(client, url)) {
             return result;
@@ -166,7 +188,8 @@ namespace ParkLookup {
         double distance = 0.0;
         double nodeLat = 0.0;
         double nodeLon = 0.0;
-        if (!findNearest(payload, lat, lon, &distance, &nodeLat, &nodeLon)) {
+        String name;
+        if (!findNearest(payload, lat, lon, &distance, &nodeLat, &nodeLon, &name)) {
             return result;
         }
 
@@ -174,7 +197,53 @@ namespace ParkLookup {
         result.distanceMeters = distance;
         result.lat = nodeLat;
         result.lon = nodeLon;
+        result.name = name;
         result.bearingDegrees = bearingDegrees(lat, lon, nodeLat, nodeLon);
         return result;
+    }
+
+    // Un solo filtro tag=valore su un tipo OSM dato (es. "nwr" o "node"),
+    // percent-encoded pronto per l'URL - usato dalle categorie con un
+    // solo tag (acqua, benzina). Il parco ne usa due insieme, costruiti
+    // direttamente in findNearestPark().
+    String singleTagFilter(double lat, double lon, const char* osmType, const char* tag, const char* value) {
+        char buf[160];
+        snprintf(
+            buf, sizeof(buf), "%s(around:%.0f,%.6f,%.6f)%%5B%s=%s%%5D;",
+            osmType, SEARCH_RADIUS_METERS, lat, lon, tag, value
+        );
+        return String(buf);
+    }
+}
+
+namespace ParkLookup {
+
+    Result findNearestPark(double lat, double lon) {
+        // "nwr" (node/way/relation), non solo nodi: i parchi sono spesso
+        // mappati come poligoni (way/relation), non un singolo punto. Due
+        // filtri uniti in un'unica query (parco + area pic-nic).
+        String filterBody = "(" +
+            singleTagFilter(lat, lon, "nwr", "leisure", "park") +
+            singleTagFilter(lat, lon, "nwr", "tourism", "picnic_site") +
+            ");";
+        return runOverpassQuery(lat, lon, filterBody);
+    }
+
+    Result findNearestWater(double lat, double lon) {
+        // Le fontanelle d'acqua potabile sono quasi sempre mappate come
+        // singoli nodi (mai poligoni) - "node" invece di "nwr".
+        return runOverpassQuery(lat, lon, singleTagFilter(lat, lon, "node", "amenity", "drinking_water"));
+    }
+
+    Result findNearestFuel(double lat, double lon) {
+        // "nwr": alcuni distributori sono mappati come area (il piazzale),
+        // non solo un nodo singolo.
+        return runOverpassQuery(lat, lon, singleTagFilter(lat, lon, "nwr", "amenity", "fuel"));
+    }
+
+    Result findNearestToilet(double lat, double lon) {
+        // Quasi sempre nodi singoli, ma "nwr" copre anche i rari casi di
+        // blocchi bagni mappati come area.
+        return runOverpassQuery(lat, lon, singleTagFilter(lat, lon, "nwr", "amenity", "toilets"));
     }
 }

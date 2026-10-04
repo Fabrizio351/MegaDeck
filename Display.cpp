@@ -11,7 +11,6 @@
 #include <esp_heap_caps.h>
 
 #include <Arduino_GFX_Library.h>
-#include "FreeSans9pt7b.h"
 
 namespace {
 
@@ -49,6 +48,8 @@ const uint16_t DD_ACCENT = gfx->color565(0x39, 0xFF, 0x14);
 const uint16_t DD_ACCENT_DIM = gfx->color565(0x0A, 0x2E, 0x10);
 const uint16_t DD_TEXT = gfx->color565(0xD7, 0xF7, 0xDF);
 const uint16_t DD_TEXT_DIM = gfx->color565(0x7F, 0xAE, 0x86);
+const uint16_t DD_DANGER = gfx->color565(0xFF, 0x3B, 0x30);
+const uint16_t DD_WARN = gfx->color565(0xFF, 0xD5, 0x1A);
 
 bool directDrawModeActive = false;
 
@@ -102,15 +103,24 @@ void drawHeaderBar() {
     gfx->setCursor(178, 6);
     gfx->print("BLE");
 
-    gfx->setTextColor(ConnStatus::isLoraActive() ? DD_ACCENT : DD_TEXT_DIM);
+    // Rosso se c'e' un messaggio Meshtastic non ancora letto (02/10,
+    // richiesto: "non li perdo"), verde se in ascolto (primo o secondo
+    // piano), spento altrimenti - stesso schema di GUARD sotto.
+    uint16_t loraColor = ConnStatus::hasUnreadLoraMessages()
+        ? gfx->color565(0xE7, 0x4C, 0x3C)
+        : (ConnStatus::isLoraActive() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setTextColor(loraColor);
     gfx->setCursor(202, 6);
     gfx->print("LORA");
 
     // NetGuard: era un'icona LVGL, persa nella conversione a disegno
-    // diretto (riaggiunta il 26/09 su segnalazione). Solo verde (attivo,
-    // nessun allarme) o rosso (allarme non ancora chiuso) su richiesta -
-    // niente stato intermedio arancio.
-    uint16_t guardColor = ConnStatus::hasNetGuardPendingAlert()
+    // diretto (riaggiunta il 26/09 su segnalazione). Rosso sia per un
+    // allarme appena scattato (pending, non ancora chiuso) SIA per un
+    // intruso ancora rilevato nell'ultimo giro anche a popup chiuso -
+    // prima tornava verde ad ogni giro anche con un dispositivo fuori
+    // whitelist ancora collegato (segnalato dall'utente il 26/09), verde
+    // altrimenti, niente stato intermedio arancio.
+    uint16_t guardColor = (ConnStatus::hasNetGuardPendingAlert() || ConnStatus::hasNetGuardActiveIntruder())
         ? gfx->color565(0xE7, 0x4C, 0x3C)
         : (ConnStatus::isNetGuardActive() ? DD_ACCENT : DD_TEXT_DIM);
     gfx->setTextColor(guardColor);
@@ -136,6 +146,7 @@ void refreshHeaderIfNeeded() {
     static bool lastVpn = false;
     static bool lastBle = false;
     static bool lastLora = false;
+    static bool lastLoraUnread = false;
     static bool lastGuardActive = false;
     static bool lastGuardAlert = false;
     static int lastBattery = -1;
@@ -157,6 +168,7 @@ void refreshHeaderIfNeeded() {
     bool vpn = ConnStatus::isVpnConnected();
     bool ble = ConnStatus::isBluetoothActive();
     bool lora = ConnStatus::isLoraActive();
+    bool loraUnread = ConnStatus::hasUnreadLoraMessages();
     bool guardActive = ConnStatus::isNetGuardActive();
     bool guardAlert = ConnStatus::hasNetGuardPendingAlert();
 
@@ -185,6 +197,7 @@ void refreshHeaderIfNeeded() {
 
     bool changed = !everDrawn
         || wifi != lastWifi || vpn != lastVpn || ble != lastBle || lora != lastLora
+        || loraUnread != lastLoraUnread
         || guardActive != lastGuardActive || guardAlert != lastGuardAlert
         || battery != lastBattery || time != lastTime
         || ramBucket != lastRamBucket;
@@ -200,6 +213,7 @@ void refreshHeaderIfNeeded() {
     lastVpn = vpn;
     lastBle = ble;
     lastLora = lora;
+    lastLoraUnread = loraUnread;
     lastGuardActive = guardActive;
     lastGuardAlert = guardAlert;
     lastBattery = battery;
@@ -288,6 +302,64 @@ int16_t wrappedTextHeight(const String& text, int16_t w, uint8_t size) {
     }
 
     return static_cast<int16_t>(lines * LINE_H);
+}
+
+
+int wrappedLineCount(const String& text, int16_t w, uint8_t size) {
+    const int16_t LINE_H = 11 * size;
+    return wrappedTextHeight(text, w, size) / LINE_H;
+}
+
+
+void drawWrappedTextRange(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color, int firstLine, int maxLines, uint8_t size) {
+    gfx->setFont(nullptr);
+    gfx->setTextSize(size);
+    gfx->setTextWrap(false);
+    gfx->setTextColor(color);
+
+    const int16_t CHAR_W = 6 * size;
+    const int16_t LINE_H = 11 * size;
+
+    int maxChars = w / CHAR_W;
+    if (maxChars < 1) {
+        maxChars = 1;
+    }
+
+    int lineIndex = 0;
+    int16_t cursorY = y;
+    int pos = 0;
+    int len = text.length();
+    int lastLine = firstLine + maxLines;
+
+    while (pos <= len && lineIndex < lastLine) {
+        int newlinePos = text.indexOf('\n', pos);
+        int lineEnd = (newlinePos == -1) ? len : newlinePos;
+        int lineLen = lineEnd - pos;
+
+        if (lineLen == 0) {
+            if (lineIndex >= firstLine) {
+                cursorY += LINE_H;
+            }
+            lineIndex++;
+        } else {
+            int segStart = pos;
+            while (segStart < lineEnd && lineIndex < lastLine) {
+                int segLen = min(maxChars, lineEnd - segStart);
+                if (lineIndex >= firstLine) {
+                    gfx->setCursor(x, cursorY);
+                    gfx->print(text.substring(segStart, segStart + segLen));
+                    cursorY += LINE_H;
+                }
+                lineIndex++;
+                segStart += segLen;
+            }
+        }
+
+        if (newlinePos == -1) {
+            break;
+        }
+        pos = newlinePos + 1;
+    }
 }
 
 
@@ -416,6 +488,7 @@ String messageText;
 void (*messageOnBack)() = nullptr;
 bool messageActive = false;
 int messageBackZone = -1;
+bool messageJustDismissed = false;
 
 void drawMessageScreen() {
     gfx->fillScreen(DD_BG);
@@ -479,12 +552,19 @@ void updateMessage() {
     }
 
     messageActive = false;
+    messageJustDismissed = true;
     void (*callback)() = messageOnBack;
     messageOnBack = nullptr;
 
     if (callback != nullptr) {
         callback();
     }
+}
+
+bool consumeMessageJustDismissed() {
+    bool v = messageJustDismissed;
+    messageJustDismissed = false;
+    return v;
 }
 
 } // namespace Display

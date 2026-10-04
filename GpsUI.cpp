@@ -42,7 +42,7 @@ namespace {
     constexpr int16_t BTN_H = 30;
     constexpr int16_t BTN_GAP = 8;
     constexpr int16_t BTN_X[3] = { 8, 112, 216 };
-    const char* BTN_LABEL[3] = { "LUOGO", "METEO", "PARK" };
+    const char* BTN_LABEL[3] = { "LUOGO", "METEO", "INFO" };
     int btnZone[3] = { -1, -1, -1 };
 
     String lastCoordsLine1, lastCoordsLine2, lastSatText;
@@ -177,21 +177,22 @@ namespace {
         String satText = satBuf;
 
         if (line1 != lastCoordsLine1 || line2 != lastCoordsLine2) {
-            gfx->fillRect(0, Display::DD_HEADER_H + 4, 320, 34, Display::DD_BG);
-            drawCenteredLine(Display::DD_HEADER_H + 6, line1, Display::DD_ACCENT, 2);
+            gfx->fillRect(0, Display::DD_HEADER_H + 4, 320, 54, Display::DD_BG);
+            drawCenteredLine(Display::DD_HEADER_H + 4, line1, Display::DD_ACCENT, 3);
             if (line2.length() > 0) {
-                drawCenteredLine(Display::DD_HEADER_H + 22, line2, Display::DD_ACCENT, 2);
+                drawCenteredLine(Display::DD_HEADER_H + 30, line2, Display::DD_ACCENT, 3);
             }
             lastCoordsLine1 = line1;
             lastCoordsLine2 = line2;
         }
 
-        // Tornato a font piccolo (size 1, richiesto 26/09 - la size 2
-        // provata in precedenza sacrificava troppo spazio verticale),
-        // ma centrato come il resto della schermata.
+        // Coordinate a 3x e righe sotto (satelliti/nazione/dettagli) a 2x
+        // - richiesto 30/09: la 1x precedente era troppo piccola da
+        // leggere. Y spostate piu' in basso per fare posto alle
+        // coordinate ora piu' alte.
         if (satText != lastSatText) {
-            gfx->fillRect(0, Display::DD_HEADER_H + 40, 320, 14, Display::DD_BG);
-            drawCenteredLine(Display::DD_HEADER_H + 42, satText, Display::DD_TEXT, 1);
+            gfx->fillRect(0, Display::DD_HEADER_H + 58, 320, 20, Display::DD_BG);
+            drawCenteredLine(Display::DD_HEADER_H + 60, satText, Display::DD_TEXT, 2);
             lastSatText = satText;
         }
     }
@@ -203,13 +204,18 @@ namespace {
     // posizioni fisse.
     void drawGeoResult(const String& country, const String& details) {
         Arduino_GFX* gfx = Display::getGfx();
-        constexpr int16_t GEO_TOP = Display::DD_HEADER_H + 58;
+        constexpr int16_t GEO_TOP = Display::DD_HEADER_H + 82;
         constexpr int16_t TEXT_W = 304;
 
         gfx->fillRect(0, GEO_TOP, 320, BTN_Y - GEO_TOP, Display::DD_BG);
 
-        drawCenteredWrappedText(GEO_TOP, TEXT_W, country, Display::DD_TEXT, 1);
-        int16_t countryH = Display::wrappedTextHeight(country, TEXT_W, 1);
+        drawCenteredWrappedText(GEO_TOP, TEXT_W, country, Display::DD_TEXT, 2);
+        int16_t countryH = Display::wrappedTextHeight(country, TEXT_W, 2);
+        // "Dettagli" a dimensione 1, non 2 come "Nazione" sopra (04/10,
+        // richiesto: con nomi lunghi - localita' + strada insieme - a
+        // dimensione 2 il testo sborda fuori dall'area disponibile e non
+        // si vede piu' nulla). A dimensione 1 il doppio dei caratteri
+        // per riga ci stanno comodamente.
         drawCenteredWrappedText(GEO_TOP + countryH + 4, TEXT_W, details, Display::DD_TEXT, 1);
 
         lastCountryText = country;
@@ -218,14 +224,19 @@ namespace {
 
     void updateGeoLabels() {
         if (!haveGeoResult) {
-            drawGeoResult("Nazione: -", "Dettagli: -");
+            drawGeoResult("Nazione:\n-", "Dettagli:\n-");
             return;
         }
 
-        String countryText = "Nazione: "
+        // A capo dopo l'etichetta (richiesto 30/09: prima "Nazione: X"
+        // stava su un'unica riga centrata, che con nomi lunghi sbilancia
+        // il centraggio) - drawCenteredWrappedText() centra ogni riga
+        // separatamente, quindi "\n" basta a mettere etichetta e valore
+        // su due righe entrambe centrate.
+        String countryText = "Nazione:\n"
             + (lastGeoResult.country.length() > 0 ? lastGeoResult.country : String("-"));
 
-        String detailsText = "Dettagli: ";
+        String detailsText = "Dettagli:\n";
         bool hasLocality = (lastGeoResult.locality.length() > 0);
         bool hasRoad = (lastGeoResult.road.length() > 0);
 

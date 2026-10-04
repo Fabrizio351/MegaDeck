@@ -102,6 +102,13 @@ namespace Board {
         pinMode(RADIO_CS_PIN, OUTPUT);
         digitalWrite(RADIO_CS_PIN, HIGH);
 
+        // NON attivato qui apposta (26/09): un tentativo di farlo
+        // partire ad OGNI avvio, prima di qualunque stampa seriale, ha
+        // prodotto un blocco totale silenzioso (nessun log, schermo nero)
+        // riproducibile anche a SD rimossa e flash appena cancellata -
+        // vedi project_wifi_connect_freeze_and_vpn_bug. VpnConfig.cpp usa
+        // Board::getSharedSPI() ma ne chiama begin() lui stesso, solo
+        // quando serve davvero (al primo import da SD), non qui.
         //sharedSPI.begin(BOARD_SPI_SCK, BOARD_SPI_MISO, BOARD_SPI_MOSI, -1);
 
         DEBUG_PRINTLN();

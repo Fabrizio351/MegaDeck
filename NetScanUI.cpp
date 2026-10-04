@@ -67,6 +67,13 @@ namespace {
         if (NetGuard::isEnabled()) {
             NetGuard::setEnabled(false);
         }
+        // Questa e' l'UNICA cosa che deve invalidare la whitelist
+        // congelata di NetGuard (vedi NetGuard::invalidateWhitelist()) -
+        // spegnere/riaccendere la sorveglianza da sola non deve mai farlo,
+        // solo un vero NetScan manuale come questo (bug reale, segnalato
+        // dall'utente il 26/09: la whitelist sembrava "aggiornarsi da
+        // sola" ogni volta che si riattivava NetGuard).
+        NetGuard::invalidateWhitelist();
         NetScan::start();
         showScanningScreen();
     }
@@ -351,6 +358,10 @@ namespace NetScanUI {
             return;
         }
 
+        // Anche questo e' un NetScan manuale vero e proprio (la primissima
+        // scansione, dato che si arriva qui solo con getDeviceCount()==0) -
+        // vedi il commento su invalidateWhitelist() in startManualRescan().
+        NetGuard::invalidateWhitelist();
         NetScan::start();
         showScanningScreen();
     }

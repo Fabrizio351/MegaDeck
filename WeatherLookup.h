@@ -16,7 +16,14 @@ namespace WeatherLookup {
 
     struct Result {
         bool valid;
-        Condition condition;
+        Condition condition; // prossima ora, mostrata con l'icona
+
+        // Tendenza (26/09, richiesta dall'utente: "capire come butta" per
+        // le prossime ore, non solo l'ora immediatamente successiva) -
+        // frase gia' pronta da mostrare sotto l'icona, confronto fra la
+        // condizione di adesso e quella fra ~4 ore. Vuota se non
+        // disponibile (es. si esce dalla finestra oraria richiesta).
+        String trend;
     };
 
     // Chiamata BLOCCANTE (richiesta HTTPS, tipicamente 1-3 secondi): va

@@ -66,6 +66,45 @@ namespace {
         // un'icona dedicata alla neve).
         return WeatherLookup::Condition::Pioggia;
     }
+
+    // 0=Sereno, 1=Nuvoloso, 2=Pioggia: per confrontare "meglio/peggio" fra
+    // due condizioni nella tendenza. Sconosciuto non e' comparabile.
+    int severity(WeatherLookup::Condition c) {
+        switch (c) {
+            case WeatherLookup::Condition::Sereno:   return 0;
+            case WeatherLookup::Condition::Nuvoloso: return 1;
+            case WeatherLookup::Condition::Pioggia:  return 2;
+            default:                                 return -1;
+        }
+    }
+
+    const char* conditionLabel(WeatherLookup::Condition c) {
+        switch (c) {
+            case WeatherLookup::Condition::Sereno:   return "sereno";
+            case WeatherLookup::Condition::Nuvoloso: return "nuvoloso";
+            case WeatherLookup::Condition::Pioggia:  return "pioggia";
+            default:                                 return "?";
+        }
+    }
+
+    // Frase pronta sulla tendenza, confrontando la condizione di adesso
+    // con quella fra ~4 ore (richiesto dall'utente: "capire come butta",
+    // non solo l'ora immediatamente successiva).
+    String buildTrend(WeatherLookup::Condition now, WeatherLookup::Condition later) {
+        int sNow = severity(now);
+        int sLater = severity(later);
+        if (sNow < 0 || sLater < 0) {
+            return "";
+        }
+
+        if (sLater == sNow) {
+            return String("Stabile nelle prossime ore (") + conditionLabel(later) + ").";
+        }
+        if (sLater > sNow) {
+            return String("In peggioramento: ") + conditionLabel(later) + " tra circa 4 ore.";
+        }
+        return String("In miglioramento: ") + conditionLabel(later) + " tra circa 4 ore.";
+    }
 }
 
 namespace WeatherLookup {
@@ -121,6 +160,14 @@ namespace WeatherLookup {
 
         result.condition = classifyWeatherCode(code);
         result.valid = true;
+
+        // Tendenza: stesso payload gia' scaricato, nessuna richiesta di
+        // rete aggiuntiva - legge solo un altro indice dello stesso array.
+        int laterCode = extractJsonIntArrayElement(payload, "weathercode", utcHour + 4);
+        if (laterCode >= 0) {
+            result.trend = buildTrend(result.condition, classifyWeatherCode(laterCode));
+        }
+
         return result;
     }
 }

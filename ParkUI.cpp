@@ -6,7 +6,6 @@
 #include "GpsUI.h"
 #include "GPS.h"
 #include "ParkLookup.h"
-#include "GeoLookup.h"
 #include "ConnStatus.h"
 
 #include <Arduino.h>
@@ -16,6 +15,19 @@
 // in memoria): schermata Park convertita a disegno diretto, stesso
 // schema di WeatherUI.cpp (chrome fisso disegnato una volta, area
 // risultato ripulita e riscritta ad ogni fetchAndShow()).
+//
+// Estesa il 26/09 da "solo parchi/aree pic-nic" a piu' categorie insieme
+// (parco/pic-nic, acqua potabile, benzina) - richiesto dall'utente per
+// un "quadro completo in caso di necessita'" su un'unica schermata,
+// rinominata "INFO" (prima "PARK") nel bottone di GpsUI.
+//
+// Rivista il 30/09 (richiesto: "un po' piccole e scarne"): aggiunto il
+// nome OSM del punto trovato quando disponibile (su una riga sotto,
+// dettaglio secondario) e una quarta categoria, bagno pubblico
+// (amenity=toilets) - piu' utile di "benzina" per chi e' a piedi, tenuta
+// comunque accanto alle altre tre. La size 2 provata per il testo
+// principale e' stata tolta subito dopo (troppo grossa per questa
+// schermata) - resta size 1 come prima.
 namespace {
 
     bool active = false;
@@ -49,13 +61,65 @@ namespace {
         return labels[index];
     }
 
-    void formatDistanceAndDirection(double meters, double bearing, char* out, size_t outSize) {
-        const char* direction = compassLabel(bearing);
+    constexpr int CATEGORY_COUNT = 4;
+    const char* CATEGORY_LABELS[CATEGORY_COUNT] = { "Parco", "Acqua", "Bagno", "Benzina" };
+    ParkLookup::Result categoryResults[CATEGORY_COUNT];
+    bool categoryFetched[CATEGORY_COUNT] = { false, false, false, false };
 
-        if (meters < 1000.0) {
-            snprintf(out, outSize, "Parco/area pic-nic a circa %d m a %s", static_cast<int>(meters + 0.5), direction);
+    // Riga principale + riga col nome OSM indentata sotto (dettaglio
+    // secondario, non sempre presente). Size 1 per entrambe (richiesto
+    // 30/09: la size 2 provata prima era troppo grossa per questa
+    // schermata - tornata come prima). Ritorna la Y da cui continuare
+    // per la categoria successiva.
+    int16_t drawCategoryLine(int16_t y, const char* label, const ParkLookup::Result* result) {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->setFont(nullptr);
+        gfx->setTextWrap(false);
+
+        String mainLine;
+        if (result == nullptr) {
+            mainLine = String(label) + ": ricerca...";
+        } else if (!result->valid) {
+            mainLine = String(label) + ": non trovato";
         } else {
-            snprintf(out, outSize, "Parco/area pic-nic a circa %.1f km a %s", meters / 1000.0, direction);
+            const char* direction = compassLabel(result->bearingDegrees);
+            char buf[32];
+            if (result->distanceMeters < 1000.0) {
+                snprintf(buf, sizeof(buf), "circa %d m a %s", static_cast<int>(result->distanceMeters + 0.5), direction);
+            } else {
+                snprintf(buf, sizeof(buf), "circa %.1f km a %s", result->distanceMeters / 1000.0, direction);
+            }
+            mainLine = String(label) + ": " + buf;
+        }
+
+        gfx->setTextSize(1);
+        gfx->setTextColor(Display::DD_ACCENT);
+        gfx->setCursor(8, y);
+        gfx->print(mainLine);
+        int16_t nextY = y + 10;
+
+        if (result != nullptr && result->valid && result->name.length() > 0) {
+            String nameLine = result->name;
+            if (nameLine.length() > 32) {
+                nameLine = nameLine.substring(0, 31) + "...";
+            }
+            gfx->setTextSize(1);
+            gfx->setTextColor(Display::DD_TEXT_DIM);
+            gfx->setCursor(16, nextY);
+            gfx->print(nameLine);
+            nextY += 10;
+        }
+
+        return nextY + 2;
+    }
+
+    void redrawResults() {
+        Arduino_GFX* gfx = Display::getGfx();
+        gfx->fillRect(0, RESULT_Y, 320, REFRESH_Y - RESULT_Y, Display::DD_BG);
+
+        int16_t y = RESULT_Y;
+        for (int i = 0; i < CATEGORY_COUNT; i++) {
+            y = drawCategoryLine(y, CATEGORY_LABELS[i], categoryFetched[i] ? &categoryResults[i] : nullptr);
         }
     }
 
@@ -70,7 +134,7 @@ namespace {
 
         gfx->setTextColor(Display::DD_ACCENT);
         gfx->setCursor(8, Display::DD_HEADER_H + 8);
-        gfx->print("PARK");
+        gfx->print("INFO");
 
         gfx->setTextColor(Display::DD_TEXT_DIM);
         gfx->setCursor(228, Display::DD_HEADER_H + 8);
@@ -92,7 +156,10 @@ namespace {
     }
 
     void fetchAndShow() {
-        showText("Ricerca del parco/area pic-nic piu' vicina...");
+        for (int i = 0; i < CATEGORY_COUNT; i++) {
+            categoryFetched[i] = false;
+        }
+        redrawResults();
 
         if (!ConnStatus::isWifiConnected()) {
             DEBUG_PRINTF(
@@ -109,41 +176,30 @@ namespace {
             return;
         }
 
-        ParkLookup::Result result = ParkLookup::findNearestPark(
-            GPS::getLatitude(), GPS::getLongitude()
-        );
+        double lat = GPS::getLatitude();
+        double lon = GPS::getLongitude();
 
-        if (!result.valid) {
-            showText(
-                "Nessun parco/area pic-nic mappato entro 5 km.\n"
-                "(dipende dai dati OpenStreetMap disponibili in questa zona)"
-            );
-            return;
-        }
+        // Quattro richieste sequenziali (Overpass non supporta comodamente
+        // di restituire "il piu' vicino per categoria" in una sola query
+        // senza un parsing molto piu' complesso, vedi ParkLookup.cpp) -
+        // ognuna aggiorna subito lo schermo appena arriva, cosi' l'utente
+        // vede risultati comparire uno alla volta invece di aspettare
+        // tutto fermo fino alla fine.
+        categoryResults[0] = ParkLookup::findNearestPark(lat, lon);
+        categoryFetched[0] = true;
+        redrawResults();
 
-        char text[96];
-        formatDistanceAndDirection(result.distanceMeters, result.bearingDegrees, text, sizeof(text));
+        categoryResults[1] = ParkLookup::findNearestWater(lat, lon);
+        categoryFetched[1] = true;
+        redrawResults();
 
-        // Mostra subito distanza+direzione (gia' utile per orientarsi),
-        // poi cerca anche il nome della via/localita' con una seconda
-        // richiesta di rete (piu' lenta): senza questo avviso intermedio
-        // lo schermo resterebbe fermo sul messaggio "in corso" ancora
-        // per qualche secondo senza nessun avviso.
-        String withSearchNote = String(text) + "\nCerco il nome della via...";
-        showText(withSearchNote);
+        categoryResults[2] = ParkLookup::findNearestToilet(lat, lon);
+        categoryFetched[2] = true;
+        redrawResults();
 
-        GeoLookup::Result geo = GeoLookup::reverseGeocode(result.lat, result.lon);
-
-        String finalText = text;
-        if (geo.valid && geo.road.length() > 0) {
-            finalText += "\nVia: " + geo.road;
-        } else if (geo.valid && geo.locality.length() > 0) {
-            finalText += "\nZona: " + geo.locality;
-        } else {
-            finalText += "\n(nome via non disponibile in questa zona)";
-        }
-
-        showText(finalText);
+        categoryResults[3] = ParkLookup::findNearestFuel(lat, lon);
+        categoryFetched[3] = true;
+        redrawResults();
     }
 
 } // namespace

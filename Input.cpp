@@ -1,5 +1,6 @@
 #include "Input.h"
 #include "Config.h"
+#include "VpnManager.h"
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -26,6 +27,20 @@ namespace {
 
     InputEvent currentEvent = InputEvent::None;
     char currentKey = 0;
+
+    // Riconosce la frase "VPNIMPORT" digitata/incollata via seriale in
+    // mezzo al normale flusso di tasti (30/09) - serve solo a innescare
+    // VpnManager::importConfigFromSerial() senza dover navigare la UI a
+    // mano: ogni carattere continua ad arrivare a translateKey() come
+    // sempre (nessun ritardo aggiunto alla digitazione reale), si tiene
+    // solo una finestra scorrevole in parallelo per riconoscere la frase.
+    // Innesco sincrono (non un flag da controllare al giro dopo): al
+    // momento del riconoscimento i byte del file .conf sono gia' in
+    // arrivo sulla stessa seriale, quindi VpnConfig::importFromSerial()
+    // deve iniziare a consumarli SUBITO, prima che un altro giro di
+    // update() possa rubarne anche solo uno come falso tasto.
+    String vpnImportTriggerWindow;
+    constexpr const char* VPN_IMPORT_TRIGGER = "VPNIMPORT";
 
     bool previousButtonState = HIGH;
     bool buttonSelectFired = false;
@@ -440,6 +455,21 @@ namespace Input {
             bool plausibleKeypress = (key >= 0x20 && key <= 0x7E) || key == '\n' || key == '\r';
             if (plausibleKeypress) {
                 translateKey(key);
+
+                if (key >= 0x20 && key <= 0x7E) {
+                    vpnImportTriggerWindow += key;
+                    constexpr size_t triggerLen = 9; // strlen(VPN_IMPORT_TRIGGER)
+                    if (vpnImportTriggerWindow.length() > triggerLen) {
+                        vpnImportTriggerWindow.remove(0, vpnImportTriggerWindow.length() - triggerLen);
+                    }
+                    if (vpnImportTriggerWindow.equals(VPN_IMPORT_TRIGGER)) {
+                        vpnImportTriggerWindow = "";
+                        DEBUG_PRINTLN("[INPUT] trigger VPNIMPORT riconosciuto sulla seriale, avvio import VPN");
+                        VpnManager::importConfigFromSerial();
+                    }
+                } else {
+                    vpnImportTriggerWindow = "";
+                }
             }
             return;
         }
@@ -569,5 +599,18 @@ namespace Input {
 
     void setTouchSuppressed(bool suppressed) {
         touchSuppressed = suppressed;
+    }
+
+    bool lockI2C(uint32_t timeoutMs) {
+        if (i2cMutex == nullptr) {
+            return false;
+        }
+        return xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+    }
+
+    void unlockI2C() {
+        if (i2cMutex != nullptr) {
+            xSemaphoreGive(i2cMutex);
+        }
     }
 }

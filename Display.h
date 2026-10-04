@@ -48,6 +48,13 @@ namespace Display {
     extern const uint16_t DD_TEXT;
     extern const uint16_t DD_TEXT_DIM;
 
+    // Rosso/giallo di allarme, aggiunti il 26/09 per l'elenco live di
+    // NetGuard (dispositivo non in whitelist attivo ora / appena
+    // scomparso) - stesso stile "matrix" della palette esistente, non
+    // colori RGB puri, per restare coerenti visivamente.
+    extern const uint16_t DD_DANGER;
+    extern const uint16_t DD_WARN;
+
     // Altezza della barra in alto disegnata a mano, in px: le schermate
     // la usano per sapere dove inizia il loro contenuto.
     constexpr int16_t DD_HEADER_H = 18;
@@ -67,6 +74,23 @@ namespace Display {
     // fumetti dei messaggi in LoRaChatUI, o per posizionare un secondo
     // blocco di testo subito sotto il primo in GpsUI).
     int16_t wrappedTextHeight(const String& text, int16_t w, uint8_t size = 1);
+
+    // Quante righe logiche (dopo il wrap) occuperebbe lo stesso testo -
+    // wrappedTextHeight() diviso l'altezza di una riga, usato per lo
+    // scroll "dentro" un messaggio troppo alto per lo schermo (02/10,
+    // vedi OpenClawUI.cpp/MeshtasticUI.cpp).
+    int wrappedLineCount(const String& text, int16_t w, uint8_t size = 1);
+
+    // Come drawWrappedText(), ma disegna SOLO le righe logiche
+    // [firstLine, firstLine+maxLines) invece di tutto il testo - righe
+    // fuori range vengono contate (per restare coerenti col wrap) ma non
+    // disegnate ne' occupano spazio nel disegno. Usata per scorrere
+    // pixel per riga dentro un singolo messaggio piu' alto della vista
+    // (02/10, bug segnalato: "se c'e' un messaggio troppo lungo non
+    // posso fare scroll verso il basso" - prima lo scroll avanzava un
+    // messaggio intero alla volta, la coda di un messaggio piu' alto
+    // dello schermo restava irraggiungibile).
+    void drawWrappedTextRange(int16_t x, int16_t y, int16_t w, const String& text, uint16_t color, int firstLine, int maxLines, uint8_t size = 1);
 
     void begin();
 
@@ -116,4 +140,22 @@ namespace Display {
     // vera: gestisce tap/Indietro/Select e chiude il messaggio (chiamando
     // il suo onBack) quando uno dei tre arriva.
     void updateMessage();
+
+    // true UNA VOLTA SOLA, subito dopo che un messaggio si e' chiuso (si
+    // azzera leggendolo, come consumeValuesChanged() in BleGatt.h). Un
+    // messaggio (es. l'allarme NetGuard, che puo' scattare da QUALUNQUE
+    // schermata) disegna a piena schermata mentre e' a video, e chi lo
+    // riceve non viene MAI chiamato durante quella finestra (isMessageActive()
+    // ha priorita' assoluta nel dispatch di App::update()) - quindi non puo'
+    // accorgersi da solo del fatto che il proprio schermo e' stato preso e
+    // rilasciato altrove (es. dall'onBack del messaggio, che spesso naviga
+    // altrove prima di tornare). Senza un segnale esplicito come questo, la
+    // schermata che riprende il controllo puo' fare solo ridisegni
+    // parziali, lasciando residui del messaggio o della schermata
+    // intermedia (bug reale, segnalato dall'utente su NetGuardUI: righe del
+    // popop d'allarme rimaste a schermo, sovrapposte al contenuto nuovo).
+    // Ogni schermata con un proprio ciclo di ridisegno parziale deve
+    // controllarlo nel proprio update() e forzare un ridisegno completo se
+    // vero.
+    bool consumeMessageJustDismissed();
 }

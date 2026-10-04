@@ -18,18 +18,17 @@ namespace ConnStatus {
     bool isVpnConnected();
     void setVpnConnected(bool connected);
 
-    // Bluetooth/LoRa non hanno un "connesso a" persistente come WiFi/VPN
-    // (sono broadcast, non collegamenti punto a punto): qui "attivo"
+    // Bluetooth non ha un "connesso a" persistente come WiFi/VPN (e'
+    // broadcast, non un collegamento punto a punto): qui "attivo"
     // significa radio pronta e non disattivata dalle Impostazioni, non
     // "in comunicazione con qualcuno in questo momento".
     bool isBluetoothActive();
-    bool isLoraActive();
 
-    // true dal momento in cui parte una trasmissione LoRa fino al suo
-    // completamento: usato per colorare diversamente l'icona LoRa in
-    // alto mentre e' effettivamente in corso un invio, cosi' si vede a
-    // colpo d'occhio da qualunque schermata (non solo dalla chat).
-    bool isLoraTransmitting();
+    // LoRa (02/10): da quando la vecchia chat custom e' stata rimossa in
+    // favore di Meshtastic, "attivo" significa che Meshtastic sta
+    // ascoltando (primo piano o secondo piano, vedi MeshtasticUI.h) - non
+    // piu' un interruttore generale indipendente.
+    bool isLoraActive();
 
     // NetGuard (vedi NetGuard.h) attivo/disattivo, per l'icona in alto.
     bool isNetGuardActive();
@@ -45,8 +44,14 @@ namespace ConnStatus {
     bool isNetGuardScanning();
 
     // Eventi in sospeso non ancora "acknowledged" dall'utente: l'icona
-    // in alto passa di colore (giallo per LoRa, rosso per NetGuard)
-    // finche' non si apre la chat / si chiude l'allarme.
+    // in alto passa di colore (rosso per LoRa/NetGuard) finche' non si
+    // apre la chat / si chiude l'allarme.
     bool hasUnreadLoraMessages();
     bool hasNetGuardPendingAlert();
+
+    // true se almeno un dispositivo fuori whitelist e' visto nell'ultimo
+    // giro (vedi NetGuard::hasActiveIntruder()) - a differenza di
+    // hasNetGuardPendingAlert() resta vero anche dopo che il popup di
+    // allarme e' stato chiuso, finche' l'intruso resta collegato.
+    bool hasNetGuardActiveIntruder();
 }

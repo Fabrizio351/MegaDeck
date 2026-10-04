@@ -1,7 +1,6 @@
 #include "ConnStatus.h"
-#include "BleChat.h"
-#include "LoRaRadio.h"
-#include "LoRaChatUI.h"
+#include "BleGatt.h"
+#include "MeshtasticUI.h"
 #include "NetGuard.h"
 
 #include <WiFi.h>
@@ -25,15 +24,11 @@ namespace ConnStatus {
     }
 
     bool isBluetoothActive() {
-        return BleChat::isReady() && BleChat::isEnabled();
+        return BleGatt::isReady() && BleGatt::isEnabled();
     }
 
     bool isLoraActive() {
-        return LoRaRadio::isReady() && LoRaRadio::isEnabled();
-    }
-
-    bool isLoraTransmitting() {
-        return LoRaRadio::isReady() && LoRaRadio::isTransmitting();
+        return MeshtasticUI::isListening();
     }
 
     bool isNetGuardActive() {
@@ -49,10 +44,14 @@ namespace ConnStatus {
     }
 
     bool hasUnreadLoraMessages() {
-        return LoRaChatUI::hasUnreadMessages();
+        return MeshtasticUI::hasUnread();
     }
 
     bool hasNetGuardPendingAlert() {
         return NetGuard::isEnabled() && NetGuard::hasPendingAlert();
+    }
+
+    bool hasNetGuardActiveIntruder() {
+        return NetGuard::isEnabled() && NetGuard::hasActiveIntruder();
     }
 }

@@ -24,14 +24,27 @@
 // alla volta quando serve.
 namespace {
 
-constexpr int MENU_ITEM_COUNT = 12;
+// Ridotto da 12 a 9 voci il 26/09 (tolte Home Assistant/Frigate/Drone,
+// mai implementate - richiesto dall'utente per non allargare troppo il
+// progetto): restano solo funzioni realmente presenti + Impostazioni.
+// Decima voce aggiunta lo stesso giorno: solo la versione firmware
+// (APP_VERSION, Config.h), preceduta da un piccolo teschio disegnato
+// (stesso stile/colore della schermata crash, vedi Display::
+// showCrashSkull()) invece del numero+testo delle altre voci - vedi il
+// caso speciale ABOUT_INDEX nel ciclo di disegno sotto. "WEB RADIO"
+// inserita il 27/09 come nuova voce 10, la versione (con teschio) spinta
+// alla 11 (ABOUT_INDEX resta l'ultima, si aggiorna da solo). LoRaWAN
+// (29/09) NON e' una voce qui - va dentro LORA TOOLS insieme a Chat e
+// Scan, vedi LoRaToolsMenu.cpp.
+constexpr int MENU_ITEM_COUNT = 11;
+constexpr int ABOUT_INDEX = MENU_ITEM_COUNT - 1;
 constexpr int GRID_COLS = 2;
 constexpr int GRID_ROWS = (MENU_ITEM_COUNT + GRID_COLS - 1) / GRID_COLS;
 
 const char* mainItems[MENU_ITEM_COUNT] = {
-    "VOIP", "WIFI", "BLE GATT", "LORA CHAT",
+    "VOIP", "WIFI", "BLE GATT", "LORA TOOLS",
     "GPS", "NET TOOLS", "VPN", "OPENCLAW.AI",
-    "HOME ASS.", "FRIGATE", "DRONE", "IMPOSTAZIONI"
+    "IMPOSTAZIONI", "WEB RADIO", APP_VERSION
 };
 
 int selectedItem = 0;
@@ -82,10 +95,9 @@ MenuAction actionFromIndex(int index) {
         case 5:  return MenuAction::NetTools;
         case 6:  return MenuAction::Vpn;
         case 7:  return MenuAction::OpenClaw;
-        case 8:  return MenuAction::HomeAssistant;
-        case 9:  return MenuAction::Frigate;
-        case 10: return MenuAction::Drone;
-        case 11: return MenuAction::Settings;
+        case 8:  return MenuAction::Settings;
+        case 9:  return MenuAction::WebRadio;
+        case 10: return MenuAction::About;
         default: return MenuAction::None;
     }
 }
@@ -95,17 +107,29 @@ MenuAction actionFromIndex(int index) {
 
 void drawScreen();
 
+// Teschio in miniatura per la voce "versione" (ABOUT_INDEX): stesso
+// stile/colore di Display::showCrashSkull() (testa tonda + mascella,
+// occhi come cavita' nere), scalato per stare in una cella di menu.
+void drawMiniSkull(Arduino_GFX* gfx, int16_t x, int16_t y) {
+    uint16_t matrixGreen = gfx->color565(0x00, 0xFF, 0x41);
+    int16_t headCx = x + 7;
+    int16_t headCy = y + 6;
+    gfx->fillCircle(headCx, headCy, 6, matrixGreen);
+    gfx->fillRoundRect(headCx - 4, headCy + 3, 8, 5, 2, matrixGreen);
+    gfx->fillCircle(headCx - 3, headCy - 1, 2, Display::DD_BG);
+    gfx->fillCircle(headCx + 3, headCy - 1, 2, Display::DD_BG);
+}
+
 
 void selectCurrentItem() {
     MenuAction action = actionFromIndex(selectedItem);
 
     mainMenuVisible = false;
 
-    // Il menu cede sempre lo schermo a LVGL prima di aprire qualunque
-    // voce: le schermate gia' convertite lo riprendono subito da sole
-    // nel proprio open() (vedi project_lvgl_removal_rewrite), quelle
-    // ancora su LVGL (WifiUI, BleChatUI, LoRaChatUI, NetToolsMenu, i
-    // placeholder Display::showMessage) ne hanno bisogno per funzionare.
+    // Residuo del periodo di coesistenza con LVGL (rimosso il 26/09,
+    // vedi Display.h): senza piu' LVGL da metter in pausa non ha alcun
+    // effetto pratico, lasciato solo per non toccare ogni singolo
+    // chiamante per zero beneficio.
     Display::setDirectDrawMode(false);
 
     if (actionCallback != nullptr) {
@@ -219,6 +243,19 @@ void drawScreen() {
 
             gfx->setTextColor(Display::DD_ACCENT);
             gfx->setCursor(x + 16, y + CELL_H / 2 - 3);
+            // Numerazione (richiesta 26/09): comodo riferimento a colpo
+            // d'occhio, non e' (ancora) una scorciatoia da tastiera.
+            String numberPrefix = String(i + 1) + ". ";
+            gfx->print(numberPrefix);
+
+            if (i == ABOUT_INDEX) {
+                // Voce speciale: numero, poi un piccolo teschio, poi la
+                // versione (mainItems[ABOUT_INDEX] == APP_VERSION) al
+                // posto del solito numero+testo.
+                int16_t skullX = x + 16 + static_cast<int16_t>(numberPrefix.length()) * 6;
+                drawMiniSkull(gfx, skullX, y + CELL_H / 2 - 7);
+                gfx->setCursor(skullX + 16, y + CELL_H / 2 - 3);
+            }
             gfx->print(mainItems[i]);
 
             itemZone[i] = TouchUI::addZone(x, y, CELL_W, CELL_H);

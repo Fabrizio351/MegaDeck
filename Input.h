@@ -47,4 +47,16 @@ namespace Input {
     // Tastiera/trackball restano invariati (servono per la combinazione
     // di sblocco).
     void setTouchSuppressed(bool suppressed);
+
+    // Espone il mutex I2C condiviso (tastiera+touch, vedi Input.cpp) ad
+    // altri moduli che accedono allo STESSO bus fisico da un ciclo
+    // diverso (29/09, aggiunto per Mic.cpp - il codec ES7210 e' sullo
+    // stesso bus di tastiera/touch) - senza, un accesso I2C concorrente
+    // puo' bloccare il bus (sospettato causare un blocco intermittente
+    // del microfono). Ritorna false se il mutex non si libera entro
+    // timeoutMs: il chiamante NON deve procedere con la transazione I2C
+    // in quel caso. unlockI2C() va sempre richiamata dopo un lockI2C()
+    // riuscito, anche in caso di errore a meta' strada.
+    bool lockI2C(uint32_t timeoutMs);
+    void unlockI2C();
 }

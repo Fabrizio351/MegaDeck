@@ -6,6 +6,7 @@
 #include "Menu.h"
 #include "NetScanUI.h"
 #include "NetGuardUI.h"
+#include "TelnetUI.h"
 
 #include <Arduino.h>
 
@@ -17,7 +18,8 @@ namespace {
 
     enum class NetToolAction {
         NetScan,
-        NetGuard
+        NetGuard,
+        Telnet
     };
 
     struct NetToolItem {
@@ -30,6 +32,7 @@ namespace {
     const NetToolItem items[] = {
         { "NETSCAN", NetToolAction::NetScan },
         { "NETGUARD", NetToolAction::NetGuard },
+        { "TELNET", NetToolAction::Telnet },
     };
 
     constexpr int ITEM_COUNT = sizeof(items) / sizeof(items[0]);
@@ -90,16 +93,52 @@ namespace {
         selectedItem = candidate;
     }
 
+    // Su/Giu' tra righe della griglia (04/10, trovato nell'audit
+    // pre-VoIP: con 3 voci su 2 colonne la terza - TELNET, sola in
+    // seconda riga - era raggiungibile SOLO a touch, nessun modo da
+    // trackball, stessa identica lacuna gia' corretta in
+    // LoRaToolsMenu.cpp il 02/10). Stessa colonna quando possibile,
+    // altrimenti l'ultima valida di quella riga (riga finale incompleta).
+    void moveUp() {
+        int col = selectedItem % GRID_COLS;
+        int candidateRowStart = rowStartIndex(selectedItem) - GRID_COLS;
+        if (candidateRowStart < 0) {
+            return;
+        }
+        int candidate = candidateRowStart + col;
+        int end = rowEndIndex(candidate);
+        if (candidate > end) {
+            candidate = end;
+        }
+        selectedItem = candidate;
+    }
+
+    void moveDown() {
+        int col = selectedItem % GRID_COLS;
+        int candidateRowStart = rowStartIndex(selectedItem) + GRID_COLS;
+        if (candidateRowStart >= ITEM_COUNT) {
+            return;
+        }
+        int candidate = candidateRowStart + col;
+        int end = rowEndIndex(candidate);
+        if (candidate > end) {
+            candidate = end;
+        }
+        selectedItem = candidate;
+    }
+
     void selectCurrentItem() {
-        // Come in Menu.cpp: cede sempre lo schermo a LVGL prima di aprire
-        // qualunque voce. NetGuardUI (gia' convertita) lo riprende subito
-        // da sola, ma NetScanUI (non ancora convertita, resta LVGL) non
-        // tocca affatto questo flag - senza questa riga restava attiva la
-        // modalita' disegno diretto ereditata da qui, e Display::update()
-        // continuava a saltare lv_timer_handler()/lv_refr_now(): lo
-        // schermo di NetScan veniva costruito in memoria ma mai disegnato
-        // ne' reattivo al tocco (bug reale, osservato il 25/09).
-        Display::setDirectDrawMode(false);
+        // "active" va disattivato PRIMA di aprire la voce, non solo alla
+        // pressione di Indietro (closeNetTools()): senza questa riga,
+        // NetToolsMenu::isActive() restava vera anche dopo essere entrati
+        // in NetGuardUI, e siccome App.cpp controlla NetToolsMenu PRIMA
+        // di NetGuardUI nella catena di dispatch, era NetToolsMenu::
+        // update() a intercettare per sempre ogni tap/tasto destinato a
+        // NetGuardUI (bug reale, "attivo sorveglianza non fa nulla",
+        // osservato 26/09 - passava inosservato con NetScanUI solo perche'
+        // quest'ultima e' controllata PRIMA di NetToolsMenu nella stessa
+        // catena, non per una vera differenza di comportamento).
+        active = false;
 
         switch (items[selectedItem].action) {
             case NetToolAction::NetScan:
@@ -108,6 +147,10 @@ namespace {
 
             case NetToolAction::NetGuard:
                 NetGuardUI::open();
+                break;
+
+            case NetToolAction::Telnet:
+                TelnetUI::open();
                 break;
         }
     }
@@ -204,6 +247,16 @@ namespace NetToolsMenu {
 
             case InputEvent::Right:
                 moveRight();
+                drawScreen();
+                break;
+
+            case InputEvent::Up:
+                moveUp();
+                drawScreen();
+                break;
+
+            case InputEvent::Down:
+                moveDown();
                 drawScreen();
                 break;
 

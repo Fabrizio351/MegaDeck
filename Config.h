@@ -1,7 +1,7 @@
 #pragma once
 
 #define APP_NAME    "TDeckFW"
-#define APP_VERSION "0.2.0"
+#define APP_VERSION "0.18.0"
 
 // Interruttore per disattivare tutti i log seriali di debug (le righe
 // "[LORA]", "[BLE]", "[MENU]", ecc. sparse nel progetto): usa
@@ -98,6 +98,27 @@
 // Tastiera fisica (ESP32-C3 come slave I2C)
 #define BOARD_KEYBOARD_INT  46
 #define BOARD_KEYBOARD_ADDR 0x55
+
+// Altoparlante I2S integrato (verificati contro gli esempi ufficiali
+// LilyGo per T-Deck, SimpleTone/I2SPlay) - spostati qui il 28/09 (prima
+// vivevano solo dentro Sound.cpp) perche' anche WebRadioUI.cpp deve
+// usare lo STESSO fisico I2S (un solo altoparlante, un solo bus): Sound
+// e WebRadioUI si passano il possesso a vicenda (Sound::
+// pauseForExternalUse()/resumeForOwnUse()), non lo tengono mai aperto
+// insieme.
+#define BOARD_I2S_BCLK       7
+#define BOARD_I2S_WS         5
+#define BOARD_I2S_DOUT       6
+
+// Microfono integrato (29/09) - chip codec ES7210 su I2C (stesso bus di
+// tastiera/touch) + un bus I2S TUTTO SUO in ricezione, pin diversi da
+// quelli dell'altoparlante sopra: nessun conflitto di risorsa fisica,
+// puo' girare anche insieme all'altoparlante. Pinout dall'esempio
+// ufficiale LilyGo (examples/Microphone/utilities.h).
+#define BOARD_ES7210_MCLK    48
+#define BOARD_ES7210_LRCK    21
+#define BOARD_ES7210_SCK     47
+#define BOARD_ES7210_DIN     14
 
 // SD Card (condivide il bus SPI con display e radio)
 #define BOARD_SDCARD_CS     39

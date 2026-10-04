@@ -15,10 +15,9 @@ enum class MenuAction {
     NetTools,
     Vpn,
     OpenClaw,
-    HomeAssistant,
-    Frigate,
-    Drone,
-    Settings
+    Settings,
+    WebRadio,
+    About
 };
 
 namespace Menu {
