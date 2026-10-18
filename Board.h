@@ -39,6 +39,14 @@ namespace Board {
     // BOARD_BAT_ADC, in base al partitore/range configurati in Config.h.
     int getBatteryPercent();
 
+    // Diagnostica TEMPORANEA (04/10, seconda tornata di calibrazione -
+    // la prima misura era falsata dall'USB collegato, vedi Config.h):
+    // tensione di cella grezza, stessa formula di getBatteryPercent()
+    // ma senza la conversione/il taglio a percentuale - da togliere
+    // (insieme al suo uso in Display.cpp) una volta fatta la misura
+    // vera a batteria scollegata dall'USB.
+    float getBatteryCellVolts();
+
     // Bus SPI condiviso da display, LoRa e SD (stessi pin fisici, CS diversi)
     SPIClass& getSharedSPI();
 }

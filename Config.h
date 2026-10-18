@@ -1,7 +1,7 @@
 #pragma once
 
 #define APP_NAME    "TDeckFW"
-#define APP_VERSION "0.18.0"
+#define APP_VERSION "1.00.3"
 
 // Interruttore per disattivare tutti i log seriali di debug (le righe
 // "[LORA]", "[BLE]", "[MENU]", ecc. sparse nel progetto): usa
@@ -40,13 +40,21 @@
 #define BOARD_I2C_SDA       18
 #define BOARD_I2C_SCL       8
 
-// Batteria: partitore resistivo 2:1 tipico del T-Deck (la tensione reale
-// della cella e' il doppio di quella letta sul pin ADC). Se la percentuale
-// mostrata in alto a destra sembra sbagliata, e' il primo posto da
-// correggere: la formula esatta del partitore dipende dalla revisione
-// hardware e non e' verificabile da codice.
+// Batteria (04/10, RICALIBRATO in due tornate - vedi memoria di
+// progetto per il resoconto completo). PRIMA tornata: col T-Deck
+// ancora collegato all'USB la cella calcolata risultava 4.701V,
+// impossibile per una LiPo -> "corretto" (SBAGLIATO, la misura era
+// contaminata dalla carica USB) a 1.787. SECONDA tornata, quella
+// buona: batteria caricata una notte intera, SCOLLEGATA dall'USB,
+// 3-5 minuti di assestamento, poi letta - 3.64V mostrati (con
+// ancora il divisore sbagliato 1.787 attivo). Pin grezzo risalito a
+// ritroso: 3.64V / 1.787 = 2037.5mV. Partitore vero, ancorato al
+// limite fisico reale di una cella LiPo piena (~4.2V): 4200mV /
+// 2037.5mV = 2.06 - vicinissimo all'assunzione originale "2:1", che
+// quindi era quasi giusta fin dall'inizio: il problema non era mai
+// il partitore, era la misura fatta con l'USB ancora collegato.
 #define BOARD_BAT_ADC        4
-#define BATTERY_ADC_DIVIDER  2.0f
+#define BATTERY_ADC_DIVIDER  2.06f
 #define BATTERY_VOLT_EMPTY   3.3f   // 0%
 #define BATTERY_VOLT_FULL    4.2f   // 100%
 

@@ -54,4 +54,13 @@ namespace ConnStatus {
     // hasNetGuardPendingAlert() resta vero anche dopo che il popup di
     // allarme e' stato chiuso, finche' l'intruso resta collegato.
     bool hasNetGuardActiveIntruder();
+
+    // VOIP (10/10): "attivo" = schermata aperta in primo piano o secondo
+    // piano acceso (vedi VoipUI::isListening()); "in chiamata" = una
+    // chiamata e' effettivamente in corso in questo momento (CallState
+    // diverso da Idle) - l'icona in alto usa il rosso per questo caso,
+    // stesso schema di LORA/GUARD (rosso = evento che richiede
+    // attenzione, sopra il normale verde "attivo").
+    bool isVoipActive();
+    bool isVoipCallActive();
 }

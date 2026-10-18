@@ -1,4 +1,4 @@
-#include "OpenClawClient.h"
+#include "HermesClient.h"
 #include "Config.h"
 
 #include <WiFi.h>
@@ -7,27 +7,25 @@
 namespace {
 
     Preferences prefs;
-    constexpr const char* PREFS_NAMESPACE = "tdeckopenclaw";
+    constexpr const char* PREFS_NAMESPACE = "tdeckhermes";
     constexpr const char* KEY_HOST = "host";
     constexpr const char* KEY_PORT = "port";
     constexpr const char* KEY_TOKEN = "token";
     constexpr const char* KEY_TIMEOUT = "timeoutSec";
 
-    // 60s (28/09): valore di default "ragionevole" per una macchina con
-    // risposte normali - ora CONFIGURABILE dal dispositivo (richiesto
-    // dall'utente per fare tuning: il suo hardware attuale, un modello
-    // locale minicpm5-2b-32k su Ollama con CPU al 98% durante
-    // l'inferenza, ha impiegato oltre 2 minuti in un test dal vivo).
+    // Stesso default "ragionevole" gia' confermato dall'utente per
+    // OpenClaw (60s) - Hermes e' anch'esso un agente AI self-hosted,
+    // stesso tipo di incertezza sui tempi di risposta a seconda del
+    // modello/hardware dietro.
     constexpr int DEFAULT_TIMEOUT_SEC = 60;
 
-    // Valori di default - LASCIATI VUOTI apposta in questo repository
-    // pubblico: host/porta/token sono personali di ciascuna installazione
-    // OpenClaw, non vanno mai pubblicati. Restano comunque
-    // sovrascrivibili via NVS (setConfig()), cioe' dalla schermata
-    // Impostazioni > OPENCLAW sul dispositivo stesso - ogni utente
-    // inserisce li' i propri dati, nessuna modifica al codice necessaria.
+    // Versione pubblica: nessun host/token precompilato - vuoti, da
+    // impostare dalla schermata CONFIG (host/porta/token del PROPRIO
+    // server Hermes). 8642 e' la porta reale di default documentata da
+    // Hermes stesso (non personale, comodo punto di partenza - vedi
+    // commit precedenti per come e' stata confermata dal vivo).
     constexpr const char* DEFAULT_HOST = "";
-    constexpr int DEFAULT_PORT = 18789;
+    constexpr int DEFAULT_PORT = 8642;
     constexpr const char* DEFAULT_TOKEN = "";
 
     bool nvsOpened = false;
@@ -45,17 +43,15 @@ namespace {
         port = prefs.getInt(KEY_PORT, DEFAULT_PORT);
         token = prefs.getString(KEY_TOKEN, DEFAULT_TOKEN);
         timeoutSeconds = prefs.getInt(KEY_TIMEOUT, DEFAULT_TIMEOUT_SEC);
-
         nvsOpened = true;
     }
 
-    // Estrae un campo stringa da un JSON semplice ({"reply":"..."}),
-    // gestendo gli escape piu' comuni (\", \\, \n, \r, \t) - a differenza
-    // dei lookup piu' vecchi di questo progetto (GeoLookup/WeatherLookup,
-    // valori senza escape), qui serve: una risposta di un LLM e' testo
-    // libero, puo' contenere virgolette o andare a capo. Stessa filosofia
-    // "niente libreria JSON pesante", solo un parser leggermente piu'
-    // robusto.
+    // Stesso parser "niente libreria JSON" gia' usato nel progetto
+    // (ultima volta in OpenClawClient.cpp) - qui per il campo
+    // "content" dentro choices[0].message, formato OpenAI-compatible.
+    // Funziona perche' "content" compare una sola volta nella risposta
+    // reale di Hermes (vedi HermesClient.h), senza bisogno di un vero
+    // parser JSON strutturato.
     String extractJsonStringField(const String& json, const char* key) {
         String pattern = String("\"") + key + "\":\"";
         int start = json.indexOf(pattern);
@@ -73,7 +69,7 @@ namespace {
                 switch (next) {
                     case 'n': out += '\n'; break;
                     case 't': out += '\t'; break;
-                    case 'r': break; // scartato, non serve su questo schermo
+                    case 'r': break;
                     case '"': out += '"'; break;
                     case '\\': out += '\\'; break;
                     default: out += next; break;
@@ -89,9 +85,6 @@ namespace {
         return out;
     }
 
-    // Simmetrico a extractJsonStringField(): scrive il messaggio
-    // dell'utente dentro il corpo della richiesta con lo stesso escape
-    // minimo (") (\) e newline.
     String jsonEscape(const String& text) {
         String out;
         int len = text.length();
@@ -110,7 +103,7 @@ namespace {
     }
 }
 
-namespace OpenClawClient {
+namespace HermesClient {
 
     bool isConfigured() {
         ensureNvsOpen();
@@ -160,17 +153,13 @@ namespace OpenClawClient {
             return result;
         }
         if (!isConfigured()) {
-            result.error = "Configura prima indirizzo e porta di OpenClaw.";
+            result.error = "Configura prima indirizzo e porta di Hermes.";
             return result;
         }
 
-        // Socket grezzo (WiFiClient), NIENTE HTTPClient (a differenza
-        // degli altri lookup del progetto): HTTPClient::setTimeout()
-        // accetta solo un uint16_t, quindi non puo' rappresentare piu' di
-        // ~65s - troppo poco per il timeout configurabile dall'utente,
-        // che deve poter arrivare a diversi minuti per fare tuning su un
-        // modello locale lento. L'attesa qui sotto usa un proprio
-        // conteggio in millis(), senza quel limite.
+        // Socket grezzo (WiFiClient), NIENTE HTTPClient - vedi
+        // HermesClient.h sul perche' (timeout configurabile oltre i
+        // ~65s che HTTPClient::setTimeout() puo' rappresentare).
         WiFiClient client;
         constexpr uint32_t CONNECT_TIMEOUT_MS = 8000;
         if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
@@ -178,23 +167,14 @@ namespace OpenClawClient {
             return result;
         }
 
-        // Endpoint A2A (02/10, protocollo REALE confermato con un test
-        // curl riuscito dal PC dell'utente - il primo tentativo con
-        // "/api/a2a/message" e un corpo REST semplice era SBAGLIATO,
-        // rispondeva 404 sia dal firmware che da curl: il vero endpoint
-        // e' "/a2a/v1", protocollo A2A standard su JSON-RPC 2.0, metodo
-        // "SendMessage"). messageId generato ad ogni invio (esp_random(),
-        // non serve coordinamento - l'id JSON-RPC esterno resta fisso,
-        // le richieste sono sempre sincrone una alla volta, non serve
-        // correlarle).
-        char messageId[24];
-        snprintf(messageId, sizeof(messageId), "tdeck-%08x", static_cast<unsigned>(esp_random()));
+        // Formato OpenAI-compatible reale di Hermes (vedi HermesClient.h,
+        // confermato dalla documentazione ufficiale) - "model" e'
+        // richiesto dal contratto ma Hermes ignora quale modello dici,
+        // usa sempre il suo agente configurato.
+        String body = "{\"model\":\"hermes-agent\",\"messages\":[{\"role\":\"user\",\"content\":\""
+            + jsonEscape(message) + "\"}],\"stream\":false}";
 
-        String body = "{\"jsonrpc\":\"2.0\",\"id\":\"tdeck-req\",\"method\":\"SendMessage\",\"params\":{\"message\":{\"messageId\":\""
-            + String(messageId) + "\",\"role\":\"ROLE_USER\",\"parts\":[{\"text\":\""
-            + jsonEscape(message) + "\"}]}}}";
-
-        String request = "POST /a2a/v1 HTTP/1.1\r\n";
+        String request = "POST /v1/chat/completions HTTP/1.1\r\n";
         request += "Host: " + host + "\r\n";
         request += "Content-Type: application/json\r\n";
         if (token.length() > 0) {
@@ -225,40 +205,57 @@ namespace OpenClawClient {
         client.stop();
 
         if (raw.length() == 0) {
-            result.error = "Nessuna risposta da OpenClaw entro " + String(timeoutSeconds) + "s (timeout).";
+            result.error = "Nessuna risposta da Hermes entro " + String(timeoutSeconds) + "s (timeout).";
             return result;
         }
 
         int bodyStart = raw.indexOf("\r\n\r\n");
         if (bodyStart < 0) {
-            result.error = "Risposta non valida da OpenClaw (header malformati).";
+            result.error = "Risposta non valida da Hermes (header malformati).";
             return result;
         }
         String statusLine = raw.substring(0, raw.indexOf("\r\n"));
+        String headers = raw.substring(0, bodyStart);
         String payload = raw.substring(bodyStart + 4);
 
-        // Codice di stato dalla status line ("HTTP/1.1 200 OK" -> 200).
         int firstSpace = statusLine.indexOf(' ');
         int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
         int httpCode = (firstSpace >= 0 && secondSpace > firstSpace)
             ? statusLine.substring(firstSpace + 1, secondSpace).toInt()
             : 0;
 
+        // Header diagnostico REALE di Hermes (07/10, trovato dal vivo -
+        // non in documentazione, nell'header della risposta): anche con
+        // HTTP 200 "X-Hermes-Error: ..." indica un problema lato server
+        // (es. modello configurato non disponibile sul catalogo/
+        // provider) - molto piu' chiaro del generico "content mancante"
+        // che si vedeva prima, controllato SEMPRE prima del resto cosi'
+        // l'utente legge l'errore vero direttamente in chat.
+        int errHeaderStart = headers.indexOf("X-Hermes-Error:");
+        if (errHeaderStart >= 0) {
+            errHeaderStart += String("X-Hermes-Error:").length();
+            int errHeaderEnd = headers.indexOf("\r\n", errHeaderStart);
+            String hermesError = headers.substring(errHeaderStart, errHeaderEnd < 0 ? headers.length() : errHeaderEnd);
+            hermesError.trim();
+            if (hermesError.length() > 0) {
+                result.error = "Hermes: " + hermesError;
+                return result;
+            }
+        }
+
         if (httpCode != 200) {
-            result.error = "OpenClaw ha risposto con errore (codice " + String(httpCode) + ")";
+            result.error = "Hermes ha risposto con errore (codice " + String(httpCode) + ")";
             return result;
         }
 
-        // Risposta A2A reale (02/10, confermata con un test curl riuscito):
-        // {"jsonrpc":"2.0","id":"...","result":{"task":{...,
-        // "artifacts":[{"artifactId":"...","parts":[{"text":"..."}]}],
-        // "history":[]}}} - extractJsonStringField cerca il primo
-        // "text":"..." nel testo grezzo, senza un vero parser JSON (stesso
-        // approccio gia' in uso nel progetto): funziona perche' "text"
-        // compare una sola volta, dentro il primo artifact/part.
-        String reply = extractJsonStringField(payload, "text");
+        // Risposta OpenAI-compatible reale: choices[0].message.content -
+        // extractJsonStringField cerca il primo "content":"..." nel testo
+        // grezzo, senza un vero parser JSON (stesso approccio gia' in uso
+        // nel progetto): funziona perche' "content" compare una sola
+        // volta, dentro il primo choice/message.
+        String reply = extractJsonStringField(payload, "content");
         if (reply.length() == 0) {
-            result.error = "Risposta non valida da OpenClaw (campo \"text\" mancante).";
+            result.error = "Risposta non valida da Hermes (campo \"content\" mancante).";
             return result;
         }
 

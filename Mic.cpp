@@ -133,4 +133,18 @@ namespace Mic {
 
         return captured;
     }
+
+    size_t readChunk(int16_t* buffer, size_t samples, uint32_t timeoutMs) {
+        if (!ready || buffer == nullptr || samples == 0) {
+            return 0;
+        }
+
+        size_t bytesWanted = samples * sizeof(int16_t);
+        size_t bytesRead = 0;
+        esp_err_t err = i2s_channel_read(rxHandle, buffer, bytesWanted, &bytesRead, timeoutMs);
+        if (err != ESP_OK) {
+            return 0;
+        }
+        return bytesRead / sizeof(int16_t);
+    }
 }

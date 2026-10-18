@@ -8,9 +8,10 @@
 #include "GPS.h"
 #include "BleGatt.h"
 #include "Sound.h"
-#include "OpenClawUI.h"
+#include "HermesUI.h"
 #include "WebRadioUI.h"
 #include "MeshtasticUI.h"
+#include "VoipUI.h"
 
 #include <Arduino.h>
 
@@ -66,6 +67,10 @@ namespace {
         // configurazione altrove nel firmware).
         ROW_OPENCLAW = 8,
         ROW_WEBRADIO = 9,
+        // Aggiunta l'08/10 (ultimo capitolo del progetto: VoIP) - apre
+        // VoipUI::openConfig() (SERVER/PORTA/UTENTE/PASSWORD/NOME),
+        // stesso schema di ROW_OPENCLAW/ROW_WEBRADIO.
+        ROW_VOIP = 10,
         ROW_COUNT
     };
 
@@ -73,7 +78,7 @@ namespace {
         "WIFI", "GPS", "BLUETOOTH",
         "SCHERMO", "TASTIERA", "SUONO", "GMT",
         "PRESET LORA",
-        "OPENCLAW", "WEB RADIO"
+        "HERMES", "WEB RADIO", "VOIP"
     };
 
     bool isGmtRow(int row) {
@@ -85,7 +90,7 @@ namespace {
     }
 
     bool isActionRow(int row) {
-        return row == ROW_OPENCLAW || row == ROW_WEBRADIO;
+        return row == ROW_OPENCLAW || row == ROW_WEBRADIO || row == ROW_VOIP;
     }
 
     bool getToggleState(int row) {
@@ -131,11 +136,12 @@ namespace {
 
     constexpr int16_t ROW_X = 4;
     constexpr int16_t ROW_W = 312;
-    // Ridotta da 24 a 18 (29/09, aggiunte OPENCLAW/WEB RADIO): con 10
-    // righe a 24px si sarebbe usciti dai 240px dello schermo (il layout
-    // originale a 8 righe era gia' al limite, vedi il commento in testa
-    // al file - "per stare tutte in una schermata sola").
-    constexpr int16_t ROW_H = 18;
+    // Ridotta da 24 a 18 (29/09, aggiunte OPENCLAW/WEB RADIO), poi da 18
+    // a 16 (08/10, aggiunta VOIP): con 11 righe a 20px di passo si
+    // sarebbe usciti dai 240px dello schermo - stessa operazione di
+    // sempre quando si aggiunge una riga (vedi il commento in testa al
+    // file - "per stare tutte in una schermata sola").
+    constexpr int16_t ROW_H = 16;
     constexpr int16_t ROW_GAP = 2;
     constexpr int16_t ROW_TOP = Display::DD_HEADER_H + 10;
 
@@ -211,8 +217,9 @@ namespace {
     void openActionTarget(int row) {
         active = false;
         switch (row) {
-            case ROW_OPENCLAW:  OpenClawUI::openConfig();     break;
+            case ROW_OPENCLAW:  HermesUI::openConfig();       break;
             case ROW_WEBRADIO:  WebRadioUI::openEditLinks();  break;
+            case ROW_VOIP:      VoipUI::openConfig();         break;
             default:                                          break;
         }
     }

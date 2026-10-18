@@ -78,7 +78,7 @@ namespace Display {
     // Quante righe logiche (dopo il wrap) occuperebbe lo stesso testo -
     // wrappedTextHeight() diviso l'altezza di una riga, usato per lo
     // scroll "dentro" un messaggio troppo alto per lo schermo (02/10,
-    // vedi OpenClawUI.cpp/MeshtasticUI.cpp).
+    // vedi HermesUI.cpp/MeshtasticUI.cpp).
     int wrappedLineCount(const String& text, int16_t w, uint8_t size = 1);
 
     // Come drawWrappedText(), ma disegna SOLO le righe logiche

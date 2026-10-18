@@ -95,12 +95,24 @@ void drawHeaderBar() {
     gfx->setCursor(120, 6);
     gfx->print("VPN");
 
+    // VOIP (10/10, spostata qui vicino a VPN su richiesta - prima era
+    // tra GUARD e la batteria): rosso durante una chiamata in corso
+    // (richiede attenzione, stesso schema di LORA/GUARD sotto), verde
+    // acceso se la schermata e' aperta o il secondo piano e' attivo ma
+    // senza chiamata in corso, verde attenuato altrimenti.
+    uint16_t voipColor = ConnStatus::isVoipCallActive()
+        ? gfx->color565(0xE7, 0x4C, 0x3C)
+        : (ConnStatus::isVoipActive() ? DD_ACCENT : DD_TEXT_DIM);
+    gfx->setTextColor(voipColor);
+    gfx->setCursor(144, 6);
+    gfx->print("VOIP");
+
     gfx->setTextColor(ConnStatus::isWifiConnected() ? DD_ACCENT : DD_TEXT_DIM);
-    gfx->setCursor(150, 6);
+    gfx->setCursor(174, 6);
     gfx->print("WIFI");
 
     gfx->setTextColor(ConnStatus::isBluetoothActive() ? DD_ACCENT : DD_TEXT_DIM);
-    gfx->setCursor(178, 6);
+    gfx->setCursor(204, 6);
     gfx->print("BLE");
 
     // Rosso se c'e' un messaggio Meshtastic non ancora letto (02/10,
@@ -110,7 +122,7 @@ void drawHeaderBar() {
         ? gfx->color565(0xE7, 0x4C, 0x3C)
         : (ConnStatus::isLoraActive() ? DD_ACCENT : DD_TEXT_DIM);
     gfx->setTextColor(loraColor);
-    gfx->setCursor(202, 6);
+    gfx->setCursor(228, 6);
     gfx->print("LORA");
 
     // NetGuard: era un'icona LVGL, persa nella conversione a disegno
@@ -124,14 +136,14 @@ void drawHeaderBar() {
         ? gfx->color565(0xE7, 0x4C, 0x3C)
         : (ConnStatus::isNetGuardActive() ? DD_ACCENT : DD_TEXT_DIM);
     gfx->setTextColor(guardColor);
-    gfx->setCursor(230, 6);
+    gfx->setCursor(258, 6);
     gfx->print("GUARD");
 
     int batteryPercent = Board::getBatteryPercent();
     char battText[8];
     snprintf(battText, sizeof(battText), "%d%%", batteryPercent);
     gfx->setTextColor(DD_TEXT_DIM);
-    gfx->setCursor(288, 6);
+    gfx->setCursor(294, 6);
     gfx->print(battText);
 }
 
@@ -149,6 +161,8 @@ void refreshHeaderIfNeeded() {
     static bool lastLoraUnread = false;
     static bool lastGuardActive = false;
     static bool lastGuardAlert = false;
+    static bool lastVoipActive = false;
+    static bool lastVoipCall = false;
     static int lastBattery = -1;
     static String lastTime;
     static int lastRamBucket = -1;
@@ -171,6 +185,8 @@ void refreshHeaderIfNeeded() {
     bool loraUnread = ConnStatus::hasUnreadLoraMessages();
     bool guardActive = ConnStatus::isNetGuardActive();
     bool guardAlert = ConnStatus::hasNetGuardPendingAlert();
+    bool voipActive = ConnStatus::isVoipActive();
+    bool voipCall = ConnStatus::isVoipCallActive();
 
     // RAM: confrontata a "fasce" (0=verde/1=giallo/2=rosso, stesse soglie
     // di drawHeaderBar()), non sul valore grezzo - l'uso heap oscilla di
@@ -199,6 +215,7 @@ void refreshHeaderIfNeeded() {
         || wifi != lastWifi || vpn != lastVpn || ble != lastBle || lora != lastLora
         || loraUnread != lastLoraUnread
         || guardActive != lastGuardActive || guardAlert != lastGuardAlert
+        || voipActive != lastVoipActive || voipCall != lastVoipCall
         || battery != lastBattery || time != lastTime
         || ramBucket != lastRamBucket;
 
@@ -216,6 +233,8 @@ void refreshHeaderIfNeeded() {
     lastLoraUnread = loraUnread;
     lastGuardActive = guardActive;
     lastGuardAlert = guardAlert;
+    lastVoipActive = voipActive;
+    lastVoipCall = voipCall;
     lastBattery = battery;
     lastTime = time;
     lastRamBucket = ramBucket;

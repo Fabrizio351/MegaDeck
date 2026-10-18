@@ -31,9 +31,10 @@
 #include "BleGattUI.h"
 #include "VpnManager.h"
 #include "VpnUI.h"
-#include "OpenClawUI.h"
+#include "HermesUI.h"
 #include "WebRadioUI.h"
 #include "ScreenLock.h"
+#include "VoipUI.h"
 
 namespace {
 
@@ -108,41 +109,28 @@ namespace {
                 String bleMac = BleGatt::getMacAddress();
                 msg += "MAC BLE: " + (bleMac.length() > 0 ? bleMac : String("non disponibile (BLE spento)"));
 
-                // Firma (richiesta 26/09) - teschietto in ASCII: il font
-                // di sistema (setFont(nullptr), usato in tutta l'app) e'
-                // solo ASCII, nessun emoji/unicode disponibile.
-                msg += "\n\n(x.x) creato da bix351 + Claude Code";
+                // Firma (richiesta 26/09, aggiornata 18/10 per la
+                // pubblicazione su GitHub come "MegaDeck") - ASCII puro:
+                // il font di sistema (setFont(nullptr), usato in tutta
+                // l'app) e' solo ASCII, nessun emoji/unicode disponibile.
+                msg += "\n\nMegaDeck by fabrizio351 : buy me a coffee\npaypal.me/fabrizioca";
 
                 Display::showMessage("Info", msg.c_str(), []() { Menu::showMain(); });
                 break;
             }
 
             case MenuAction::OpenClaw:
-                OpenClawUI::open();
+                HermesUI::open();
                 break;
 
             case MenuAction::WebRadio:
                 WebRadioUI::open();
                 break;
 
-            // VoIP: non ancora implementata (Home Assistant/Frigate/Drone
-            // tolte del tutto dal menu il 26/09, mai implementate - la
-            // loro gestione passa da OpenClaw, vedi OpenClawUI.cpp).
-            // Prima mostrava un popup LVGL "Inserisci qui la tua
-            // funzione" - eliminato (26/09) su richiesta, resta una voce
-            // di menu presente ma senza ancora una destinazione: il tap
-            // non fa nulla per ora. Menu::selectCurrentItem() disattiva
-            // SEMPRE il disegno diretto prima di dispatchare qui (residuo
-            // del periodo LVGL, vedi Menu.cpp) - per una voce reale ci
-            // pensa il proprio open(), ma per questa, che non apre nulla,
-            // nessuno lo riattivava piu': l'header restava congelato allo
-            // stato del momento (sembrava un blocco generale, segnalato
-            // 26/09, in realta' tutto il resto restava reattivo).
-            // Il test hardware del microfono (29/09) e' stato spostato
-            // dentro OpenClawUI.cpp (barra spaziatrice in composizione,
-            // vedi triggerVoiceTest()) - qui VoIP torna un placeholder
-            // senza destinazione, come prima.
             case MenuAction::VoIP:
+                VoipUI::open();
+                break;
+
             default:
                 Display::setDirectDrawMode(true);
                 break;
@@ -257,10 +245,12 @@ namespace App {
                 BleGattUI::update();
             } else if (VpnUI::isActive()) {
                 VpnUI::update();
-            } else if (OpenClawUI::isActive()) {
-                OpenClawUI::update();
+            } else if (HermesUI::isActive()) {
+                HermesUI::update();
             } else if (WebRadioUI::isActive()) {
                 WebRadioUI::update();
+            } else if (VoipUI::isActive()) {
+                VoipUI::update();
             } else {
                 Menu::update();
             }
@@ -294,6 +284,13 @@ namespace App {
         // Meshtastic ascolta solo quando la sua schermata e' aperta -
         // stesso limite di condivisione della radio unica di sempre).
         MeshtasticUI::backgroundUpdate();
+
+        // VoIP (08/10, ultimo capitolo del progetto): registrazione SIP
+        // e segnalazione di chiamata vanno avanti indipendentemente
+        // dalla schermata attiva, stesso principio degli update() sopra
+        // (vedi VoipUI.h sul limite noto se la schermata e' chiusa e il
+        // secondo piano e' spento).
+        VoipUI::backgroundUpdate();
 
         // Saltata anch'essa quando bloccato: Display::update() chiama
         // lv_timer_handler(), che elabora i tocchi tramite l'indev LVGL

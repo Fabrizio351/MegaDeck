@@ -2,6 +2,8 @@
 #include "BleGatt.h"
 #include "MeshtasticUI.h"
 #include "NetGuard.h"
+#include "VoipUI.h"
+#include "SipClient.h"
 
 #include <WiFi.h>
 
@@ -53,5 +55,13 @@ namespace ConnStatus {
 
     bool hasNetGuardActiveIntruder() {
         return NetGuard::isEnabled() && NetGuard::hasActiveIntruder();
+    }
+
+    bool isVoipActive() {
+        return VoipUI::isListening();
+    }
+
+    bool isVoipCallActive() {
+        return SipClient::getCallState() != SipClient::CallState::Idle;
     }
 }

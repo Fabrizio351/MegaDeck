@@ -24,4 +24,12 @@ namespace Mic {
     // richiesto se il buffer e' piu' piccolo o la lettura I2S va in
     // timeout).
     size_t captureSeconds(int16_t* buffer, size_t bufferCapacitySamples, int seconds);
+
+    // Lettura "a pezzi" per lo streaming (08/10, per VoIP) - riusa lo
+    // stesso canale I2S RX gia' inizializzato da begin(), ma legge un
+    // singolo blocco di 'samples' campioni invece di un ciclo lungo
+    // secondi: pensata per essere richiamata a cadenza fissa (20ms) dal
+    // task audio di RtpAudio.cpp. Ritorna il numero di campioni letti
+    // davvero (0 se non pronto o timeout).
+    size_t readChunk(int16_t* buffer, size_t samples, uint32_t timeoutMs);
 }

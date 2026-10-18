@@ -1,6 +1,5 @@
 #include "Input.h"
 #include "Config.h"
-#include "VpnManager.h"
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -27,20 +26,6 @@ namespace {
 
     InputEvent currentEvent = InputEvent::None;
     char currentKey = 0;
-
-    // Riconosce la frase "VPNIMPORT" digitata/incollata via seriale in
-    // mezzo al normale flusso di tasti (30/09) - serve solo a innescare
-    // VpnManager::importConfigFromSerial() senza dover navigare la UI a
-    // mano: ogni carattere continua ad arrivare a translateKey() come
-    // sempre (nessun ritardo aggiunto alla digitazione reale), si tiene
-    // solo una finestra scorrevole in parallelo per riconoscere la frase.
-    // Innesco sincrono (non un flag da controllare al giro dopo): al
-    // momento del riconoscimento i byte del file .conf sono gia' in
-    // arrivo sulla stessa seriale, quindi VpnConfig::importFromSerial()
-    // deve iniziare a consumarli SUBITO, prima che un altro giro di
-    // update() possa rubarne anche solo uno come falso tasto.
-    String vpnImportTriggerWindow;
-    constexpr const char* VPN_IMPORT_TRIGGER = "VPNIMPORT";
 
     bool previousButtonState = HIGH;
     bool buttonSelectFired = false;
@@ -435,44 +420,25 @@ namespace Input {
 
         lastInputTime = millis();
 
-        if (Serial.available()) {
-            char key = static_cast<char>(Serial.read());
-
-            // CONFERMATO (2026-09-23): la porta USB CDC nativa genera byte
-            // spuri quando qualcosa si connette/riconnette alla seriale
-            // (un monitor, un tool di diagnostica, persino un riavvio
-            // dell'upload) - senza filtro venivano presi per pressioni di
-            // tasto reali, decine al secondo, molto piu' veloci di
-            // qualunque essere umano. Ogni evento di navigazione cosi'
-            // generato apre/chiude schermate a raffica, saturando in
-            // pochi secondi il pool LVGL da 64KB (allora ancora in uso,
-            // rimosso il 26/09) - causa reale dietro sia i crash "durante
-            // il redraw dei menu" sia
-            // uno schermo nero che si ripresenta identico ad ogni riavvio
-            // finche' resta collegato un cavo USB. Accettiamo solo
-            // caratteri plausibili da una vera digitazione (stampabili,
-            // piu' invio); il resto e' rumore e va scartato silenziosamente.
-            bool plausibleKeypress = (key >= 0x20 && key <= 0x7E) || key == '\n' || key == '\r';
-            if (plausibleKeypress) {
-                translateKey(key);
-
-                if (key >= 0x20 && key <= 0x7E) {
-                    vpnImportTriggerWindow += key;
-                    constexpr size_t triggerLen = 9; // strlen(VPN_IMPORT_TRIGGER)
-                    if (vpnImportTriggerWindow.length() > triggerLen) {
-                        vpnImportTriggerWindow.remove(0, vpnImportTriggerWindow.length() - triggerLen);
-                    }
-                    if (vpnImportTriggerWindow.equals(VPN_IMPORT_TRIGGER)) {
-                        vpnImportTriggerWindow = "";
-                        DEBUG_PRINTLN("[INPUT] trigger VPNIMPORT riconosciuto sulla seriale, avvio import VPN");
-                        VpnManager::importConfigFromSerial();
-                    }
-                } else {
-                    vpnImportTriggerWindow = "";
-                }
-            }
-            return;
-        }
+        // RIMOSSO DEL TUTTO (09/10) - la USB CDC nativa serviva sia i log
+        // di debug (DEBUG_PRINTLN/PRINTF) SIA, da qui, come un canale di
+        // "tastiera" non autenticato: qualunque byte stampabile arrivato
+        // sulla stessa porta (incluso - scoperto dal vivo - un frammento
+        // leggibile del log di debug stesso, es. "disegno_diretto=1" o
+        // "ccezione" da una riga di CRASHLOG) veniva preso per un tasto
+        // vero e finiva dentro il buffer di testo attivo (es. il numero
+        // da comporre su VOIP). Il filtro precedente (solo ASCII
+        // stampabile, vedi project_serial_input_noise_bug in memoria)
+        // bloccava il rumore binario ma non un frammento di testo
+        // leggibile come questo. L'utente ha confermato di non usare il
+        // trigger "VPNIMPORT" (vedi sotto, rimosso insieme) ne' di
+        // digitare tasti dal monitor seriale per testare senza tastiera
+        // fisica - quindi l'intero canale e' stato disattivato invece di
+        // reso "piu' sicuro": la tastiera fisica vera (sotto, via I2C) e'
+        // un canale completamente separato e non ne e' affetta.
+        // L'import VPN resta comunque disponibile dal menu (VpnUI.cpp
+        // chiama VpnManager::importConfigFromSerial() direttamente, un
+        // percorso bloccante indipendente da questo ciclo).
 
         // Il pin INT non si e' mai dimostrato affidabile su questo modulo
         // (resta sempre alto anche premendo tasti, verificato via log):

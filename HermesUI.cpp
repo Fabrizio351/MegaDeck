@@ -1,5 +1,5 @@
-#include "OpenClawUI.h"
-#include "OpenClawClient.h"
+#include "HermesUI.h"
+#include "HermesClient.h"
 #include "Display.h"
 #include "Input.h"
 #include "Menu.h"
@@ -10,14 +10,11 @@
 
 #include <Arduino.h>
 
-// Chat con OpenClaw (27/09) - stessa forma di LoRaChatUI.cpp (fumetti ad
-// altezza variabile, tastiera fisica per scrivere), ma l'invio e'
-// BLOCCANTE: una richiesta HTTP con risposta diretta (vedi
-// OpenClawClient.h), non un broadcast radio asincrono. Aggiunta una
-// schermata di configurazione (host/porta/token) raggiungibile dalla
-// chat stessa - richiesto esplicitamente, per poter cambiare indirizzo
-// se la macchina OpenClaw si sposta/migra senza dover toccare il
-// firmware.
+// Chat con Hermes (07/10, sostituisce TelegramUI/OpenClawUI - stessa
+// forma a fumetti, tastiera fisica per scrivere) - l'invio e'
+// BLOCCANTE: una richiesta HTTP con risposta diretta nella stessa
+// chiamata (vedi HermesClient.h), non asincrono come il tentativo
+// Telegram appena scartato.
 namespace {
 
     constexpr int MAX_MESSAGES = 30;
@@ -41,27 +38,23 @@ namespace {
     };
     Mode mode = Mode::Closed;
 
-    // PIN fisso (02/10, richiesto: "se lo perdo e qualcuno lo accende
-    // senza pin non puo' usare openclaw con API a pagamento") - chiesto
-    // una SOLA volta per sessione di accensione: RAM, non NVS, quindi si
-    // azzera da solo spegnendo/riavviando il T-Deck; uscire e rientrare
-    // nella schermata durante la stessa sessione (senza spegnere) NON lo
-    // richiede piu'. Non protegge openConfig() (raggiungibile da
-    // Impostazioni): quello schermo modifica solo host/porta/token, non
-    // fa mai una richiesta HTTP a pagamento.
-    // IMPORTANTE per chi compila questo repository pubblico: cambia
-    // questo valore con un PIN tuo prima di usare davvero la funzione -
-    // "0000" qui e' solo un segnaposto, NON e' un valore segreto.
-    constexpr const char* OPENCLAW_PIN = "0000";
-    bool openClawUnlocked = false;
+    // PIN fisso - richiesto: "se lo perde e qualcuno lo accende senza
+    // pin non puo' usare l'assistente con API a pagamento" - chiesto
+    // una SOLA volta per sessione di accensione: RAM, non NVS, quindi
+    // si azzera da solo spegnendo/riavviando il T-Deck. Non protegge
+    // openConfig() (raggiungibile da Impostazioni): quello schermo
+    // modifica solo host/porta/token, non manda mai una richiesta HTTP.
+    // Valore reale di questa installazione - locale, NON committato
+    // (vedi la versione pubblica su git: segnaposto "0000" li').
+    constexpr const char* BOT_PIN = "0000";
+    bool unlocked = false;
     String pinBuffer;
     bool pinError = false;
 
-    // Vero quando CONFIG e' stato aperto direttamente da Impostazioni
-    // (29/09, richiesto: "tenere tutto ordinato" - vedi OpenClawUI::
-    // openConfig()), non passando dalla chat - in quel caso uscire da
-    // CONFIG (FATTO/Indietro) deve tornare a Impostazioni, non alla chat
-    // (che potrebbe anche non essere raggiungibile, es. senza WiFi).
+    // Vero quando CONFIG e' stato aperto direttamente da Impostazioni,
+    // non passando dalla chat - in quel caso uscire da CONFIG (FATTO/
+    // Indietro) deve tornare a Impostazioni, non alla chat (che
+    // potrebbe anche non essere raggiungibile, es. senza WiFi).
     bool openedFromSettings = false;
 
     enum class ConfigField {
@@ -73,17 +66,9 @@ namespace {
     constexpr int CONFIG_FIELD_COUNT = 4;
     ConfigField editingField = ConfigField::Host;
     String editBuffer;
-    // Riga a fuoco nella schermata CONFIG (29/09, richiesto: il trackball
-    // non funzionava li', solo il touch - la lista non aveva mai avuto un
-    // concetto di riga "selezionata" da spostare con Su/Giu').
     int selectedConfigRow = 0;
 
     int topVisibleMsgIndex = 0;
-    // Righe di testo del messaggio in cima gia' "scorse via" (02/10, bug
-    // segnalato: "se c'e' un messaggio troppo lungo non posso fare
-    // scroll verso il basso" - prima lo scroll avanzava un messaggio
-    // intero alla volta, la coda di un messaggio piu' alto della vista
-    // restava irraggiungibile). 0 = si vede dall'inizio del messaggio.
     int topMsgLineOffset = 0;
     bool followingTail = true;
     int dragAccumY = 0;
@@ -98,17 +83,10 @@ namespace {
     constexpr int16_t TEXT_W = BTN_W - (BOX_PAD * 2) - 2;
 
     constexpr int16_t STATUS_Y = Display::DD_HEADER_H + 20;
-    // Tasto CONFIG tolto dalla chat (29/09, richiesto: la configurazione
-    // e' raggiungibile da Impostazioni - vedi OpenClawUI::openConfig() -
-    // "cosi c'e' piu' spazio per la chat"): la lista messaggi riprende
-    // tutto lo spazio che occupava.
     constexpr int16_t LIST_TOP = STATUS_Y + 14;
     constexpr int16_t COMPOSE_BTN_Y = 206;
     constexpr int16_t LIST_BOTTOM = COMPOSE_BTN_Y - 4;
 
-    // SCRIVI+GPS sulla stessa riga, 2/3+1/3 (02/10, richiesto: "aggiungi
-    // anche alla chat openclaw un tasto per condividere coordinate gps")
-    // - stesso schema gia' usato in MeshtasticUI.cpp.
     constexpr int16_t ROW_GAP = 4;
     constexpr int16_t WRITE_BTN_W = (BTN_W - ROW_GAP) * 2 / 3;
     constexpr int16_t GPS_BTN_X = BTN_X + WRITE_BTN_W + ROW_GAP;
@@ -120,15 +98,11 @@ namespace {
     constexpr int16_t SCROLL_STEP_PX = 40;
 
     constexpr int16_t EDIT_FIELD_X = 8;
-    // Spostato piu' in basso (29/09, richiesto: si sovrapponeva alla
-    // scritta con il nome del campo sopra, es. con "TIMEOUT (SECONDI)").
     constexpr int16_t EDIT_FIELD_Y = Display::DD_HEADER_H + 55;
     constexpr int16_t EDIT_FIELD_W = 280;
     constexpr int16_t EDIT_FIELD_H = 28;
 
     constexpr int16_t CFG_ROW_TOP = Display::DD_HEADER_H + 30;
-    // Ridotta da 40 a 34 (28/09, aggiunto il 4o campo TIMEOUT): con 4
-    // righe a 40px si sarebbe sovrapposta al tasto FATTO (fisso a y=206).
     constexpr int16_t CFG_ROW_H = 34;
 
     int composeZone = -1;
@@ -160,7 +134,7 @@ namespace {
 
     String buildMessageText(int index) {
         const ChatMessage& msg = messages[index];
-        return (msg.outgoing ? "TU: " : "OPENCLAW: ") + msg.text;
+        return (msg.outgoing ? "TU: " : "HERMES: ") + msg.text;
     }
 
     int16_t messageBoxHeight(int index) {
@@ -188,12 +162,9 @@ namespace {
         return firstVisible;
     }
 
-    // Quante righe di testo stanno nella vista messaggi, e di quante il
-    // messaggio in cima la eccede (0 se ci sta per intero) - base dello
-    // scroll "dentro" un messaggio (02/10).
     int visibleTextLines() {
         int16_t viewportH = LIST_BOTTOM - LIST_TOP - (BOX_PAD * 2);
-        int lines = viewportH / 11; // 11 = altezza riga a size 1, vedi Display.cpp
+        int lines = viewportH / 11;
         return lines > 0 ? lines : 1;
     }
 
@@ -206,11 +177,6 @@ namespace {
         return overflow > 0 ? overflow : 0;
     }
 
-    // Un passo di scroll: prima avanza/retrocede DENTRO il messaggio in
-    // cima se e' piu' alto della vista, solo dopo cambia messaggio -
-    // cosi' la coda/l'inizio di un messaggio lungo restano sempre
-    // raggiungibili. Ritorna false se non c'e' altro da scorrere in
-    // quella direzione (inizio/fine assoluti della chat).
     bool scrollStepDown() {
         if (topMsgLineOffset < topMsgOverflowLines()) {
             topMsgLineOffset++;
@@ -232,7 +198,7 @@ namespace {
         }
         if (topVisibleMsgIndex > 0) {
             topVisibleMsgIndex--;
-            topMsgLineOffset = topMsgOverflowLines(); // si arriva "da sotto", parte dalla coda
+            topMsgLineOffset = topMsgOverflowLines();
             return true;
         }
         return false;
@@ -279,14 +245,14 @@ namespace {
             gfx->setTextColor(gfx->color565(0xE6, 0x7E, 0x22));
             gfx->setCursor(8, STATUS_Y);
             gfx->print("IN ATTESA DI RISPOSTA...");
-        } else if (!OpenClawClient::isConfigured()) {
+        } else if (!HermesClient::isConfigured()) {
             gfx->setTextColor(Display::DD_WARN);
             gfx->setCursor(8, STATUS_Y);
             gfx->print("Non configurato - tocca CONFIG qui sotto.");
         } else {
             gfx->setTextColor(Display::DD_TEXT_DIM);
             gfx->setCursor(8, STATUS_Y);
-            String line = OpenClawClient::getHost() + ":" + String(OpenClawClient::getPort());
+            String line = HermesClient::getHost() + ":" + String(HermesClient::getPort());
             gfx->print(line);
         }
     }
@@ -296,10 +262,6 @@ namespace {
         String text = buildMessageText(index);
         int16_t boxH = messageBoxHeight(index);
 
-        // Azzurro per le risposte in arrivo (28/09, richiesto: prima era
-        // un verde simile a quello dei messaggi inviati, "vedo subito se
-        // ho risposte" - un colore ben distinto dal verde-accento serve
-        // proprio a farle risaltare a colpo d'occhio).
         uint16_t borderColor = messages[index].outgoing
             ? Display::DD_ACCENT
             : gfx->color565(0x3D, 0xB8, 0xF5);
@@ -312,7 +274,7 @@ namespace {
         Arduino_GFX* gfx = Display::getGfx();
         gfx->fillScreen(Display::DD_BG);
         Display::drawHeaderBar();
-        drawHeaderTitle("OPENCLAW");
+        drawHeaderTitle("HERMES");
         drawStatusTag();
 
         TouchUI::clearZones();
@@ -320,14 +282,11 @@ namespace {
         if (messageCount == 0) {
             Display::drawWrappedText(
                 BTN_X, LIST_TOP + 4, TEXT_W,
-                "Nessun messaggio ancora.\nScrivi qualcosa per iniziare a parlare con OpenClaw.",
+                "Nessun messaggio ancora.\nScrivi qualcosa per iniziare a parlare con Hermes.",
                 Display::DD_TEXT_DIM
             );
         } else if (topMsgOverflowLines() > 0) {
-            // Messaggio in cima piu' alto della vista (02/10) - occupa
-            // tutto lo spazio disponibile mostrando solo la "finestra" di
-            // righe scelta da topMsgLineOffset, niente altri messaggi
-            // insieme (non ci sarebbe comunque spazio).
+            Arduino_GFX* gfx = Display::getGfx();
             uint16_t borderColor = messages[topVisibleMsgIndex].outgoing
                 ? Display::DD_ACCENT
                 : gfx->color565(0x3D, 0xB8, 0xF5);
@@ -367,11 +326,6 @@ namespace {
         gpsZone = TouchUI::addZone(GPS_BTN_X, COMPOSE_BTN_Y, GPS_BTN_W, BTN_H);
     }
 
-    // Schermata PIN (02/10) - vedi OPENCLAW_PIN sopra. Nessun tasto Back
-    // da tastiera per uscire (stessa convenzione delle altre schermate
-    // di modifica campo di questo file, es. EditField: solo il tocco su
-    // [ESCI] annulla) - voluto: un PIN protetto non deve avere una via
-    // di fuga piu' comoda di quella delle altre schermate sensibili.
     void drawPinScreen() {
         Arduino_GFX* gfx = Display::getGfx();
         gfx->fillScreen(Display::DD_BG);
@@ -382,7 +336,7 @@ namespace {
         gfx->setTextWrap(false);
         gfx->setTextColor(Display::DD_ACCENT);
         gfx->setCursor(8, Display::DD_HEADER_H + 8);
-        gfx->print("OPENCLAW - PIN");
+        gfx->print("HERMES - PIN");
 
         TouchUI::clearZones();
 
@@ -390,7 +344,7 @@ namespace {
 
         Display::drawWrappedText(
             8, EDIT_FIELD_Y + EDIT_FIELD_H + 10, 304,
-            pinError ? "PIN errato, riprova." : "Inserisci il PIN per usare OpenClaw.",
+            pinError ? "PIN errato, riprova." : "Inserisci il PIN per usare Hermes.",
             pinError ? Display::DD_WARN : Display::DD_TEXT_DIM
         );
 
@@ -407,19 +361,17 @@ namespace {
         drawPinScreen();
     }
 
-    // Richiamata dopo un PIN corretto - stessa logica che open() avrebbe
-    // eseguito subito se non ci fosse stato il PIN di mezzo.
     void proceedAfterUnlock() {
         Input::setTextEntryMode(false);
         if (!ConnStatus::isWifiConnected()) {
             Display::showMessage(
-                "OpenClaw",
+                "Hermes",
                 "Devi prima connetterti a una rete WiFi.",
                 []() { Menu::back(); }
             );
             return;
         }
-        if (!OpenClawClient::isConfigured()) {
+        if (!HermesClient::isConfigured()) {
             showConfigScreen();
         } else {
             showChatScreen();
@@ -427,8 +379,8 @@ namespace {
     }
 
     void confirmPin() {
-        if (pinBuffer == OPENCLAW_PIN) {
-            openClawUnlocked = true;
+        if (pinBuffer == BOT_PIN) {
+            unlocked = true;
             pinBuffer = "";
             pinError = false;
             proceedAfterUnlock();
@@ -475,10 +427,7 @@ namespace {
         sending = true;
         showChatScreen();
 
-        // BLOCCANTE (vedi OpenClawClient.h): l'interfaccia resta ferma
-        // sul messaggio "in attesa di risposta..." per la durata reale
-        // della richiesta - un LLM locale puo' metterci diversi secondi.
-        OpenClawClient::Result result = OpenClawClient::sendMessage(text);
+        HermesClient::Result result = HermesClient::sendMessage(text);
         sending = false;
 
         if (result.valid) {
@@ -493,12 +442,10 @@ namespace {
         drawChatScreen();
     }
 
-    // Condivide la posizione GPS come normale messaggio di testo (02/10,
-    // richiesto: "un tasto per condividere coordinate gps") - OpenClaw e'
-    // una chat testuale con un LLM, non c'e' un formato "posizione"
-    // dedicato come in Meshtastic: le coordinate vengono semplicemente
-    // scritte in chiaro nel messaggio, stesso giro bloccante di
-    // sendComposedMessage().
+    // Condivide la posizione GPS come normale messaggio di testo -
+    // Hermes e' una chat testuale con un LLM, non c'e' un formato
+    // "posizione" dedicato come in Meshtastic: le coordinate vengono
+    // semplicemente scritte in chiaro nel messaggio.
     void sendGpsPosition() {
         if (!GPS::hasFix()) {
             appendMessage("(posizione non inviata: nessun fix GPS)", true);
@@ -514,7 +461,7 @@ namespace {
         sending = true;
         showChatScreen();
 
-        OpenClawClient::Result result = OpenClawClient::sendMessage(text);
+        HermesClient::Result result = HermesClient::sendMessage(text);
         sending = false;
 
         if (result.valid) {
@@ -557,7 +504,7 @@ namespace {
         drawComposeScreen();
     }
 
-    // --- Configurazione (host/porta/token) ---
+    // --- Configurazione (host/porta/token/timeout) ---
 
     const char* fieldLabel(ConfigField f) {
         switch (f) {
@@ -571,10 +518,10 @@ namespace {
 
     String fieldValue(ConfigField f) {
         switch (f) {
-            case ConfigField::Host:    return OpenClawClient::getHost();
-            case ConfigField::Port:    return OpenClawClient::getPort() > 0 ? String(OpenClawClient::getPort()) : "";
-            case ConfigField::Token:   return OpenClawClient::getToken();
-            case ConfigField::Timeout: return String(OpenClawClient::getTimeoutSeconds());
+            case ConfigField::Host:    return HermesClient::getHost();
+            case ConfigField::Port:    return HermesClient::getPort() > 0 ? String(HermesClient::getPort()) : "";
+            case ConfigField::Token:   return HermesClient::getToken();
+            case ConfigField::Timeout: return String(HermesClient::getTimeoutSeconds());
         }
         return "";
     }
@@ -604,9 +551,6 @@ namespace {
         gfx->print(value.length() > 0 ? value : "(non impostato)");
     }
 
-    // Sposta la riga a fuoco (Su/Giu' da trackball) - ridisegna solo le
-    // due righe coinvolte, stesso schema gia' usato in WebRadioUI.cpp
-    // per la selezione delle stazioni.
     void selectConfigRow(int index) {
         int previous = selectedConfigRow;
         selectedConfigRow = index;
@@ -620,11 +564,11 @@ namespace {
         Arduino_GFX* gfx = Display::getGfx();
         gfx->fillScreen(Display::DD_BG);
         Display::drawHeaderBar();
-        drawHeaderTitle("OPENCLAW CONFIG");
+        drawHeaderTitle("HERMES CONFIG");
 
         Display::drawWrappedText(
             BTN_X, Display::DD_HEADER_H + 18, BTN_W,
-            "Tocca una riga per modificarla (es. se sposti la macchina OpenClaw altrove).",
+            "Tocca una riga per modificarla (es. se sposti la macchina di Hermes altrove).",
             Display::DD_TEXT_DIM
         );
 
@@ -646,8 +590,6 @@ namespace {
         drawConfigScreen();
     }
 
-    // Esce da CONFIG verso il posto giusto: Impostazioni se e' stato
-    // aperto da li', altrimenti la chat (comportamento di sempre).
     void exitConfigScreen() {
         if (openedFromSettings) {
             openedFromSettings = false;
@@ -696,10 +638,10 @@ namespace {
         String trimmed = editBuffer;
         trimmed.trim();
 
-        String host = OpenClawClient::getHost();
-        int port = OpenClawClient::getPort();
-        String token = OpenClawClient::getToken();
-        int timeoutSeconds = OpenClawClient::getTimeoutSeconds();
+        String host = HermesClient::getHost();
+        int port = HermesClient::getPort();
+        String token = HermesClient::getToken();
+        int timeoutSeconds = HermesClient::getTimeoutSeconds();
 
         switch (editingField) {
             case ConfigField::Host:    host = trimmed; break;
@@ -708,12 +650,10 @@ namespace {
             case ConfigField::Timeout: timeoutSeconds = trimmed.toInt(); break;
         }
 
-        OpenClawClient::setConfig(host, port, token, timeoutSeconds);
+        HermesClient::setConfig(host, port, token, timeoutSeconds);
         showConfigScreen();
     }
 
-    // true se si e' davvero in fondo del tutto - ultimo messaggio
-    // visibile E (se e' piu' alto della vista) scorso fino alla sua coda.
     bool isAtBottom() {
         return topVisibleMsgIndex >= computeMaxTopIndex() && topMsgLineOffset >= topMsgOverflowLines();
     }
@@ -767,13 +707,6 @@ namespace {
                 showComposeScreen();
                 break;
 
-            // Destra = GPS (04/10, trovato nell'audit pre-VoIP: il
-            // tasto GPS era raggiungibile SOLO a tocco). Sinistra/Destra
-            // non avevano nessun altro uso su questa schermata, nessun
-            // conflitto - a differenza di MeshtasticUI.cpp non serve un
-            // vero "fuoco" ciclabile: qui ci sono solo 2 controlli
-            // (SCRIVI su Select, GPS su Destra), gia' 1 a 1 senza
-            // ambiguita' su quale sia "attivo".
             case InputEvent::Right:
                 sendGpsPosition();
                 break;
@@ -797,20 +730,6 @@ namespace {
         }
     }
 
-    // Verifica trigger+bip della dettatura (29/09, richiesto: testarla
-    // "gia' nella sezione corretta" invece che dalla voce VoIP del menu)
-    // - click del trackball (Select) A CASELLA VUOTA: bip "via", clip
-    // fissa di qualche secondo, bip "fine", riproduzione per conferma.
-    // NON ancora un vero interruttore avvia/ferma (servirebbe una
-    // cattura non bloccante, vedi Mic.h) ne' collegato a una
-    // trascrizione vera - solo il trigger e i bip, nel posto giusto. Il
-    // bug intermittente gia' noto sul microfono (vedi memoria) puo'
-    // manifestarsi anche qui.
-    // Dettatura provata e poi scartata per OpenClaw (29/09, troppo
-    // complicata per il beneficio - "openclaw basta la chat"): qui resta
-    // solo l'invio testuale normale, come prima dell'esperimento. Il
-    // modulo Mic.h/Mic.cpp non e' stato rimosso: serve ancora per il
-    // VoIP.
     void handleComposeInput() {
         int tapped = TouchUI::pollTap();
         if (tapped == cancelZone) {
@@ -887,22 +806,16 @@ namespace {
 
 } // namespace
 
-namespace OpenClawUI {
+namespace HermesUI {
 
     void open() {
-        // PIN prima di qualsiasi altra cosa (anche prima del controllo
-        // WiFi) - vedi OPENCLAW_PIN sopra. Chiesto una sola volta per
-        // sessione di accensione (openClawUnlocked e' RAM, non NVS).
-        if (!openClawUnlocked) {
+        if (!unlocked) {
             showPinScreen();
             return;
         }
         proceedAfterUnlock();
     }
 
-    // Apre CONFIG direttamente, senza passare dalla chat (29/09,
-    // richiesto: raggiungibile anche da Impostazioni) - niente
-    // controllo WiFi qui, modificare host/porta/token non lo richiede.
     void openConfig() {
         openedFromSettings = true;
         Display::setDirectDrawMode(true);

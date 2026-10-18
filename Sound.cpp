@@ -182,4 +182,8 @@ namespace Sound {
             playTone(1500, 90);
         }
     }
+
+    void playVoipKeyTone() {
+        playTone(1500, 30);
+    }
 }

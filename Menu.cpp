@@ -43,7 +43,7 @@ constexpr int GRID_ROWS = (MENU_ITEM_COUNT + GRID_COLS - 1) / GRID_COLS;
 
 const char* mainItems[MENU_ITEM_COUNT] = {
     "VOIP", "WIFI", "BLE GATT", "LORA TOOLS",
-    "GPS", "NET TOOLS", "VPN", "OPENCLAW.AI",
+    "GPS", "NET TOOLS", "VPN", "HERMES",
     "IMPOSTAZIONI", "WEB RADIO", APP_VERSION
 };
 

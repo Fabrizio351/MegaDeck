@@ -32,6 +32,12 @@ namespace Sound {
     // trattandosi di una notifica di sicurezza.
     void playNetGuardAlert();
 
+    // Click breve di conferma (10/10, VOIP): un solo tono corto quando
+    // si seleziona una cifra sul tastierino VOIP, per sapere di aver
+    // selezionato senza dover guardare lo schermo - diverso da tutti
+    // gli altri suoni sopra (singolo, molto corto) per non confondersi.
+    void playVoipKeyTone();
+
     // Volume persistente (NVS), 0-100. 0 = silenziato del tutto (nessun
     // suono viene generato, non solo abbassato al minimo udibile).
     // Sopravvive al riavvio.

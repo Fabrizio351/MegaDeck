@@ -176,7 +176,11 @@ namespace Board {
         return sharedSPI;
     }
 
-    int getBatteryPercent() {
+    // Fattorizzata (04/10, seconda tornata di calibrazione - vedi
+    // getBatteryCellVolts() in Board.h) - stessa media di 16 campioni
+    // gia' usata da getBatteryPercent(), condivisa anche dalla
+    // diagnostica temporanea cosi' non si duplica la logica di lettura.
+    float sampleBatteryCellVolts() {
         // Una singola lettura ADC balla di qualche punto percentuale da
         // una chiamata all'altra per puro rumore elettrico, facendo
         // "ballare" la cifra in alto a destra. Media di piu' campioni
@@ -193,7 +197,11 @@ namespace Board {
         // dell'ADC dell'ESP32 (molto piu' affidabile del semplice
         // analogRead() scalato a mano).
         float pinMillivolts = static_cast<float>(sumMillivolts) / SAMPLES;
-        float cellVolts = (pinMillivolts / 1000.0f) * BATTERY_ADC_DIVIDER;
+        return (pinMillivolts / 1000.0f) * BATTERY_ADC_DIVIDER;
+    }
+
+    int getBatteryPercent() {
+        float cellVolts = sampleBatteryCellVolts();
 
         float percent = (cellVolts - BATTERY_VOLT_EMPTY)
             / (BATTERY_VOLT_FULL - BATTERY_VOLT_EMPTY) * 100.0f;
@@ -202,5 +210,9 @@ namespace Board {
         if (percent > 100.0f) percent = 100.0f;
 
         return static_cast<int>(percent + 0.5f);
+    }
+
+    float getBatteryCellVolts() {
+        return sampleBatteryCellVolts();
     }
 }

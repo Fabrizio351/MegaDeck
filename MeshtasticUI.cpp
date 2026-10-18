@@ -99,11 +99,22 @@ namespace {
         float lastRssi = 0;
         float lastSnr = 0;
         uint32_t packetCount = 0;
+        // Provenienza del pacchetto (16/10, richiesto esplicitamente per
+        // motivi di sicurezza: "ne va della mia sicurezza" - sapere se un
+        // nodo e' DAVVERO raggiungibile per radio vicino a noi, o se lo
+        // stiamo vedendo solo perche' qualcuno lo rilancia su internet via
+        // un bridge MQTT, nel qual caso potrebbe essere ovunque nel mondo
+        // e NON nelle vicinanze). lastHopsAway = hop_start - hop_limit
+        // residuo nell'ultimo pacchetto (0 = ricevuto diretto via radio,
+        // senza nessun relay in mezzo), -1 se non calcolabile (hop_start
+        // mancante/zero, pacchetti piu' vecchi).
+        int lastHopsAway = -1;
+        bool lastViaMqtt = false;
 
         // Telemetria (03/10, richiesto: "tutto il possibile se e'
         // traducibile senza vedere hash" nel dettaglio nodo) - SOLO in
-        // RAM, volutamente NON incluso nel blob persistito del NodeDB
-        // (PersistedNode piu' sotto): sono letture che invecchiano in
+        // RAM (la NodeDB non viene piu' persistita su flash dal 18/10,
+        // vedi clearNodeDb()/open()): sono letture che invecchiano in
         // fretta (temperatura/umidita' di un minuto fa non ha senso
         // "congelarla" fino al prossimo avvio). Un flag di presenza per
         // OGNI campo - sono tutti "optional" nel protobuf reale, un nodo
@@ -132,6 +143,47 @@ namespace {
     SeenNode seenNodes[MAX_NODES];
     int nodeListTopRow = 0;
     int nodeListDragAccumY = 0;
+
+    // Scomparsa automatica dei nodi (16/10, richiesto: "se appare
+    // qualcuno scompare o mi sposto ho la lista [aggiornata]") - prima
+    // un nodo restava in lista PER SEMPRE una volta visto, con solo
+    // "visto X fa" scritto a fianco senza nessuna conseguenza reale.
+    // Meshtastic non ha mai avuto una scansione attiva in questo
+    // firmware (i nodi si annunciano da soli, la radio ascolta sempre
+    // in continuo) - questo e' il pezzo che mancava per far si' che la
+    // lista rifletta davvero "chi sento ADESSO", non "chi ho mai
+    // sentito dall'ultimo azzeramento": un nodo senza traffico da piu'
+    // di NODE_STALE_TIMEOUT_MS si considera non piu' raggiungibile e
+    // viene tolto. 30 minuti e' un compromesso: i nodi Meshtastic reali
+    // mandano la loro posizione/nodeinfo a intervalli che possono
+    // arrivare a 15+ minuti anche da fermi, un timeout piu' corto
+    // farebbe scomparire e riapparire nodi fermi ma ancora vicini.
+    constexpr uint32_t NODE_STALE_TIMEOUT_MS = 30UL * 60UL * 1000UL;
+    uint32_t lastStaleCheckMs = 0;
+
+    void expireStaleNodes() {
+        uint32_t now = millis();
+        for (int i = 0; i < MAX_NODES; i++) {
+            if (seenNodes[i].used && (now - seenNodes[i].lastSeenMs) > NODE_STALE_TIMEOUT_MS) {
+                seenNodes[i] = SeenNode();
+            }
+        }
+    }
+
+    // Azzera la NodeDB in RAM (16/10, bug segnalato dal vivo: cambiando
+    // preset LongFast/MediumFast - spreading factor diverso, reti di
+    // fatto diverse che normalmente non si sentono a vicenda - i nodi
+    // vecchi restavano per sempre in lista e quelli nuovi del nuovo
+    // preset non si vedevano mai, perche' la tabella (16 slot) non era
+    // piena e l'LRU in findOrCreateNode() non aveva motivo di sostituire
+    // nulla). NON tocca il file persistito su flash: se si torna al
+    // preset precedente, al prossimo riavvio quei nodi si ritrovano.
+    void clearNodeDb() {
+        for (int i = 0; i < MAX_NODES; i++) {
+            seenNodes[i] = SeenNode();
+        }
+        nodeListTopRow = 0;
+    }
 
     // Trova lo slot del nodo, o ne crea uno nuovo (libero, o il meno
     // visto di recente se la tabella e' piena - un LRU semplice, non
@@ -162,13 +214,16 @@ namespace {
         return slot;
     }
 
-    void recordNodeSeen(uint32_t nodeNum, float rssi, float snr, const String& channel) {
+    void recordNodeSeen(uint32_t nodeNum, float rssi, float snr, const String& channel,
+                        int hopsAway, bool viaMqtt) {
         int idx = findOrCreateNode(nodeNum);
         seenNodes[idx].lastSeenMs = millis();
         seenNodes[idx].lastRssi = rssi;
         seenNodes[idx].lastSnr = snr;
         seenNodes[idx].lastChannel = channel;
         seenNodes[idx].packetCount++;
+        seenNodes[idx].lastHopsAway = hopsAway;
+        seenNodes[idx].lastViaMqtt = viaMqtt;
     }
 
     void recordNodeInfo(uint32_t nodeNum, const String& longName, const String& shortName) {
@@ -202,103 +257,23 @@ namespace {
         return count;
     }
 
-    // Persistenza NodeDB (02/10, richiesto: "chiudere il capitolo
-    // Meshtastic" - oggi la lista nodi vive solo in RAM e si perde
-    // uscendo dalla schermata/riavviando) - struct POD senza String,
-    // cosi' l'intero array si salva/carica in un colpo solo con
-    // putBytes()/getBytes() invece di tante chiavi separate. Nomi
-    // accorciati a buffer fissi (24/8 char, oltre il necessario per i
-    // nomi Meshtastic reali) solo per questo formato su disco - in RAM
-    // restano String come sempre.
-    constexpr const char* NODEDB_PREFS_NS = "tdeckmeshnd";
-    bool nodeDbLoaded = false;
-
-    struct PersistedNode {
-        uint32_t nodeNum = 0;
-        char longName[24] = {0};
-        char shortName[8] = {0};
-        bool hasPosition = false;
-        double lat = 0.0;
-        double lon = 0.0;
-        uint32_t ageMs = 0; // eta' (millis()-lastSeenMs) AL MOMENTO DEL SALVATAGGIO
-        char lastChannel[12] = {0};
-        float lastRssi = 0;
-        float lastSnr = 0;
-        uint32_t packetCount = 0;
-        bool used = false;
-    };
-
-    void saveNodeDb() {
-        PersistedNode buf[MAX_NODES];
-        uint32_t now = millis();
-        for (int i = 0; i < MAX_NODES; i++) {
-            const SeenNode& n = seenNodes[i];
-            PersistedNode& pn = buf[i];
-            pn.nodeNum = n.nodeNum;
-            strncpy(pn.longName, n.longName.c_str(), sizeof(pn.longName) - 1);
-            strncpy(pn.shortName, n.shortName.c_str(), sizeof(pn.shortName) - 1);
-            pn.hasPosition = n.hasPosition;
-            pn.lat = n.lat;
-            pn.lon = n.lon;
-            pn.ageMs = n.used ? (now - n.lastSeenMs) : 0;
-            strncpy(pn.lastChannel, n.lastChannel.c_str(), sizeof(pn.lastChannel) - 1);
-            pn.lastRssi = n.lastRssi;
-            pn.lastSnr = n.lastSnr;
-            pn.packetCount = n.packetCount;
-            pn.used = n.used;
-        }
-        Preferences p;
-        p.begin(NODEDB_PREFS_NS, false);
-        p.putBytes("nodes", buf, sizeof(buf));
-        p.end();
-    }
-
-    // L'eta' salvata ignora il tempo in cui il dispositivo e' rimasto
-    // spento (nessun RTC/NTP disponibile) - "visto Xs/m/h fa" dopo un
-    // riavvio riparte dall'eta' dell'ultima sessione, non da quella vera.
-    // Semplificazione accettata, non un bug: l'alternativa sarebbe un
-    // orologio assoluto che qui non abbiamo.
-    void loadNodeDb() {
-        PersistedNode buf[MAX_NODES];
-        Preferences p;
-        p.begin(NODEDB_PREFS_NS, true);
-        size_t got = p.getBytes("nodes", buf, sizeof(buf));
-        p.end();
-        if (got != sizeof(buf)) {
-            return; // prima volta, o formato diverso - niente da caricare
-        }
-        uint32_t now = millis();
-        for (int i = 0; i < MAX_NODES; i++) {
-            const PersistedNode& pn = buf[i];
-            SeenNode& n = seenNodes[i];
-            n = SeenNode();
-            n.nodeNum = pn.nodeNum;
-            n.longName = String(pn.longName);
-            n.shortName = String(pn.shortName);
-            n.hasPosition = pn.hasPosition;
-            n.lat = pn.lat;
-            n.lon = pn.lon;
-            n.lastSeenMs = now - pn.ageMs; // wraparound unsigned voluto, vedi commento sopra
-            n.lastChannel = String(pn.lastChannel);
-            n.lastRssi = pn.lastRssi;
-            n.lastSnr = pn.lastSnr;
-            n.packetCount = pn.packetCount;
-            n.used = pn.used;
-        }
-    }
-
-    void ensureNodeDbLoaded() {
-        if (!nodeDbLoaded) {
-            nodeDbLoaded = true;
-            loadNodeDb();
-        }
-    }
+    // Persistenza NodeDB - COSTRUITA 02/10, RIMOSSA 18/10. L'idea era
+    // far sopravvivere la lista nodi a un riavvio (struct POD
+    // save/load via Preferences). L'utente ha poi chiarito il vero
+    // principio di sicurezza alla base di tutto questo capitolo: dopo
+    // QUALUNQUE interruzione dell'ascolto radio (cambio preset, chiusura
+    // senza secondo piano, O un vero spegnimento) ci si potrebbe trovare
+    // altrove, quindi i nodi di prima non sono mai piu' attendibili "per
+    // default" - ripristinarli da flash a un riavvio era l'esatto
+    // opposto di questo principio. Vedi clearNodeDb() e open() piu'
+    // sotto: ora la lista riparte SEMPRE vuota quando la radio non era
+    // gia' nostra ininterrottamente, riavvio compreso.
 
     // Storico messaggi (30/09 sera, richiesto: "stesso layout/
     // funzionamento della chat OpenClaw") - fumetti rettangolari ad
     // altezza variabile, bordo di colore diverso per inviati/ricevuti,
     // scroll con trascinamento o trackball. Copiato di proposito da
-    // OpenClawUI.cpp (stesso schema, stessi nomi di funzione) invece di
+    // HermesUI.cpp (stesso schema, stessi nomi di funzione) invece di
     // reinventarlo - l'unica differenza reale e' che qui il mittente non
     // e' un valore binario "io/OpenClaw" ma il nodo Meshtastic che ha
     // generato l'evento, quindi ChatMessage porta un "sender" esplicito.
@@ -364,7 +339,7 @@ namespace {
     int topVisibleMsgIndex = 0;
     // Righe di testo del messaggio in cima gia' "scorse via" (02/10, bug
     // segnalato: "se c'e' un messaggio troppo lungo non posso fare
-    // scroll verso il basso" - stesso fix di OpenClawUI.cpp). 0 = si
+    // scroll verso il basso" - stesso fix di HermesUI.cpp). 0 = si
     // vede dall'inizio del messaggio.
     int topMsgLineOffset = 0;
     bool followingTail = true;
@@ -479,7 +454,6 @@ namespace {
 
     void closeMeshtastic() {
         active = false;
-        saveNodeDb(); // persiste la lista nodi (02/10) - checkpoint naturale all'uscita
         // Se il secondo piano e' attivo (02/10) la radio NON si rilascia -
         // resta in ascolto, drenata da backgroundUpdate(). Altrimenti e'
         // l'uscita "piena" di sempre.
@@ -540,7 +514,7 @@ namespace {
         return Display::wrappedTextHeight(buildMessageText(index), TEXT_W) + (BOX_PAD * 2);
     }
 
-    // Identica a OpenClawUI::computeMaxTopIndex() - quanti messaggi
+    // Identica a HermesUI::computeMaxTopIndex() - quanti messaggi
     // (a partire da dove) riempiono la viewport partendo dall'ultimo,
     // per sapere dove fermare lo scroll verso il basso.
     int computeMaxTopIndex() {
@@ -566,7 +540,7 @@ namespace {
 
     // Quante righe di testo stanno nella vista messaggi, e di quante il
     // messaggio in cima la eccede (0 se ci sta per intero) - base dello
-    // scroll "dentro" un messaggio (02/10, stesso schema di OpenClawUI.cpp).
+    // scroll "dentro" un messaggio (02/10, stesso schema di HermesUI.cpp).
     int visibleTextLines() {
         int16_t viewportH = LIST_BOTTOM - LIST_TOP - (BOX_PAD * 2);
         int lines = viewportH / 11; // 11 = altezza riga a size 1, vedi Display.cpp
@@ -696,7 +670,7 @@ namespace {
             gfx->print("] >");
         }
 
-        // Lista messaggi (30/09 sera, stesso schema di OpenClawUI.cpp -
+        // Lista messaggi (30/09 sera, stesso schema di HermesUI.cpp -
         // fumetti rettangolari ad altezza variabile, piu' recenti in
         // fondo, scorrevole).
         TouchUI::clearZones();
@@ -713,7 +687,7 @@ namespace {
             // Messaggio in cima piu' alto della vista (02/10) - occupa
             // tutto lo spazio disponibile mostrando solo la "finestra" di
             // righe scelta da topMsgLineOffset, stesso schema di
-            // OpenClawUI.cpp.
+            // HermesUI.cpp.
             Arduino_GFX* gfx = Display::getGfx();
             uint16_t borderColor = messages[topVisibleMsgIndex].outgoing
                 ? Display::DD_ACCENT
@@ -1147,6 +1121,24 @@ namespace {
         addRow("Posizione:", n.hasPosition ? (String(n.lat, 5) + ", " + String(n.lon, 5)) : "(nessuna ricevuta)", !n.hasPosition);
         addRow("Canale:", n.lastChannel.length() > 0 ? n.lastChannel : "sconosciuto", n.lastChannel.length() == 0);
         addRow("RSSI/SNR:", String(n.lastRssi, 0) + " dB / " + String(n.lastSnr, 1));
+        // Provenienza (16/10, richiesto per sicurezza: distinguere un nodo
+        // DAVVERO in zona radio da uno visto solo perche' rilanciato via
+        // internet/MQTT, che potrebbe trovarsi ovunque) - riga in warning
+        // (arancione) quando NON e' radio diretta, cosi' salta all'occhio.
+        String viaText;
+        bool viaWarn = false;
+        if (n.lastViaMqtt) {
+            viaText = "INTERNET (MQTT) - non e' per forza vicino!";
+            viaWarn = true;
+        } else if (n.lastHopsAway < 0) {
+            viaText = "radio, salti sconosciuti";
+        } else if (n.lastHopsAway == 0) {
+            viaText = "radio diretta (0 salti)";
+        } else {
+            viaText = "radio, " + String(n.lastHopsAway) + " salti (rilanciato)";
+            viaWarn = true;
+        }
+        addRow("Via:", viaText, viaWarn);
         addRow("Pacchetti:", String(n.packetCount));
         addRow("Visto:", nodeAgeText(n.lastSeenMs));
         // Telemetria (03/10, richiesto: "tutto il possibile se e'
@@ -3081,6 +3073,14 @@ namespace {
         int hopLimit = h.flags & 0x07;
         bool wantAck = (h.flags & 0x08) != 0;
         bool viaMqtt = (h.flags & 0x10) != 0;
+        // hop_start (bit 5-7) - invariato durante il relay, vedi
+        // maybeRelayPacket() - ci dice con quanti salti residui e'
+        // PARTITO il pacchetto, cosi' la differenza con hopLimit (quanti
+        // ne restano adesso) e' il numero di relay che ha davvero
+        // attraversato finora. hop_start=0 e' ambiguo (mittenti troppo
+        // vecchi/non conformi) quindi lo trattiamo come "non calcolabile".
+        int hopStart = (h.flags >> 5) & 0x07;
+        int hopsAway = (hopStart > 0 && hopStart >= hopLimit) ? (hopStart - hopLimit) : -1;
 
         // Inoltro (02/10) - indipendente da canale/decifratura, un vero
         // nodo mesh fa da relay anche per traffico che non puo' leggere.
@@ -3140,7 +3140,8 @@ namespace {
         // se non riusciamo a leggere il contenuto del pacchetto. Canale
         // "sconosciuto" (02/10) se l'hash non combacia con nessuno dei due
         // che proviamo - il nodo c'e', ma non sappiamo su quale canale.
-        recordNodeSeen(h.from, rssi, snr, channelLabel.length() > 0 ? channelLabel : "sconosciuto");
+        recordNodeSeen(h.from, rssi, snr, channelLabel.length() > 0 ? channelLabel : "sconosciuto",
+                      hopsAway, viaMqtt);
 
         String contentLine;
         String typeText;
@@ -3243,10 +3244,14 @@ namespace {
             String meta = "[" + typeText + " - " + (channelLabel.length() > 0 ? channelLabel : "?") + "] h" + String(hopLimit) +
                 (wantAck ? " ACK" : "") + (viaMqtt ? " MQTT" : "") + " " + String(rssi, 0) + "dB";
             appendChatMessage(nodeIdText(h.from), contentLine + "\n" + meta, false, h.channelHash);
-            // Notifica (02/10, richiesto: "non li perdo") - solo se non si
-            // sta gia' guardando la chat in questo momento, altrimenti il
-            // messaggio e' comunque appena apparso sullo schermo.
-            if (!active) {
+            // Notifica (02/10, richiesto: "non li perdo"; estesa il
+            // 18/10 - segnalato dall'utente: stando su un'ALTRA
+            // sotto-schermata di Meshtastic, es. lista nodi, non solo
+            // fuori da Meshtastic del tutto, vale la stessa logica:
+            // "active" da solo significa solo "Meshtastic ha il fuoco",
+            // NON "sto guardando la chat" - serve anche "mode ==
+            // Mode::Main" per quello.
+            if (!active || mode != Mode::Main) {
                 unread = true;
                 Sound::playLoRaMessageReceived();
             }
@@ -3254,18 +3259,24 @@ namespace {
                 ensureBottomVisible();
             }
         }
-        // Ridisegnata SOLO se la schermata e' davvero in primo piano
-        // (03/10, bug segnalato dall'utente: in secondo piano un
-        // messaggio in arrivo faceva comparire la chat Meshtastic SOPRA
-        // qualunque altra schermata si stesse usando, e quella restava
-        // "congelata" dopo perche' non sapeva di dover ridisegnarsi -
-        // "facciamo che quando e' in background se arriva il messaggio
-        // fa solo il suono... non viene mostrata alcuna maschera").
-        // "mode" da solo NON basta: resta Main anche da sfondo (serve a
-        // backgroundUpdate() per continuare a decodificare), "active" e'
-        // invece vero SOLO mentre questa schermata e' davvero quella
-        // mostrata (vedi closeMeshtastic()).
-        if (active) {
+        // Ridisegnata SOLO se la schermata CHAT e' davvero quella
+        // mostrata in questo momento (03/10, bug segnalato dall'utente:
+        // in secondo piano un messaggio in arrivo faceva comparire la
+        // chat Meshtastic SOPRA qualunque altra schermata si stesse
+        // usando, e quella restava "congelata" dopo perche' non sapeva
+        // di dover ridisegnarsi - "facciamo che quando e' in background
+        // se arriva il messaggio fa solo il suono... non viene mostrata
+        // alcuna maschera"). Esteso il 18/10: lo stesso identico
+        // problema succedeva ANCHE stando dentro Meshtastic ma su
+        // un'altra sotto-schermata (lista nodi, dettaglio, ecc.) -
+        // "active" da solo non bastava, serviva anche "mode ==
+        // Mode::Main" perche' drawScreen() e' la funzione della SOLA
+        // chat principale: chiamarla con un "mode" diverso sovrascriveva
+        // lo schermo con la chat senza pero' cambiare "mode", lasciando
+        // poi l'input dispatch (vedi update()) a gestire eventi per una
+        // sotto-schermata che non era piu' quella davvero disegnata -
+        // da qui la sensazione di "si blocca tutto".
+        if (active && mode == Mode::Main) {
             drawScreen();
         }
     }
@@ -3311,7 +3322,22 @@ namespace MeshtasticUI {
         active = true;
         mode = Mode::Main;
         unread = false; // si sta guardando la chat adesso, i messaggi arrivati si "leggono"
-        ensureNodeDbLoaded(); // ripristina la lista nodi (02/10) - solo la prima volta per sessione d'uso
+
+        // Sicurezza (16/10, segnalato dall'utente: "potenzialmente
+        // potrei essere da tutt'altra parte del mondo"; chiarito
+        // ulteriormente il 18/10 - vale anche per un vero spegnimento/
+        // riavvio, non solo per la chiusura senza secondo piano) -
+        // radioBorrowed falso qui vuol dire che l'ascolto radio NON e'
+        // ininterrotto da qualche momento nel passato (chiusura senza
+        // secondo piano, O il primissimo avvio dopo un riavvio/
+        // spegnimento): in ENTRAMBI i casi i nodi di una sessione
+        // precedente non sono piu' attendibili, si riparte sempre da
+        // una lista vuota. Stesso trattamento del cambio preset: vedi
+        // clearNodeDb().
+        if (!radioBorrowed) {
+            clearNodeDb();
+        }
+
         Display::setDirectDrawMode(true);
 
         // Se la radio e' gia' nostra (02/10: si rientra con il secondo
@@ -3382,6 +3408,14 @@ namespace MeshtasticUI {
         channelPrefs.putBool("presetMF", mediumFastPreset);
         channelPrefs.end();
 
+        // Bug segnalato dal vivo il 16/10: cambiare preset e' cambiare
+        // rete (spreading factor diverso, normalmente non ci si sente
+        // tra reti diverse) - i nodi visti col preset precedente vanno
+        // svuotati, altrimenti restano in lista per sempre mescolati ai
+        // nuovi (o al posto loro, dato che l'LRU non li sostituisce se
+        // la tabella non e' piena). Vedi clearNodeDb().
+        clearNodeDb();
+
         // Se la radio e' gia' nostra (primo piano o secondo piano gia'
         // attivi), va riconfigurata SUBITO con il nuovo spreading factor -
         // altrimenti si resterebbe in ascolto col preset vecchio finche'
@@ -3403,6 +3437,14 @@ namespace MeshtasticUI {
             return;
         }
         drainIncomingPacket();
+
+        // Controllo scadenza nodi (16/10) - ogni minuto basta e avanza
+        // dato il timeout di 30 minuti, non serve farlo ad ogni ciclo.
+        uint32_t now = millis();
+        if (now - lastStaleCheckMs > 60000) {
+            lastStaleCheckMs = now;
+            expireStaleNodes();
+        }
     }
 
     void update() {
@@ -3461,7 +3503,7 @@ namespace MeshtasticUI {
         }
 
         // Scroll della lista messaggi (trascinamento) - stesso schema di
-        // OpenClawUI::handleChatInput(), incluso lo scroll "dentro" un
+        // HermesUI::handleChatInput(), incluso lo scroll "dentro" un
         // messaggio piu' alto della vista (02/10).
         int16_t dragDelta = TouchUI::pollDragDeltaY();
         if (dragDelta != 0 && messageCount > 0) {
